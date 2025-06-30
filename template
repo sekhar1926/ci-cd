@@ -1,369 +1,168 @@
-Excellent. Let's start this process methodically. This incremental approach is the best way to ensure each component works perfectly before moving to the next.
+apiVersion: v2
+name: common-app
+description: A common Helm chart for deploying standard microservices in our platform.
+type: application
 
-Here is your detailed, step-by-step guide to achieve your first two goals.
+# Version of the chart itself. You can bump this when you make changes to the chart.
+version: 0.1.0
 
-Phase 1: Create the Centralized cicd-platform Repository and Build Template
-
-Our goal here is to create the repository that will hold our CI/CD "blueprints" and populate it with our first template for building a Kotlin application.
-
-Step 1.1: Create and Clone the cicd-platform Repository
-
-In your Azure DevOps project, navigate to Repos > Files.
-
-Click the repository name at the top and select New repository.
-
-Name it cicd-platform and click Create.
-
-Clone this new, empty repository to your local machine:
-
-Generated bash
-git clone https://<YourOrg>@dev.azure.com/<YourOrg>/<YourProject>/_git/cicd-platform
-cd cicd-platform
+# Version of the application this chart deploys. Can be a placeholder.
+appVersion: "1.0.0"
 
 
-Step 1.2: Create the Build Template File Structure
 
-Inside your local cicd-platform folder, create the following directory structure. For now, we only need the build template.
 
-Generated code
-/cicd-platform
-|-- /pipelines
-|   |-- /build
-|   |   `-- kotlin-docker-build.yml   <-- This is our new template
-`-- README.md
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-IGNORE_WHEN_COPYING_END
+# Default values for the common-app chart.
+# These will be overridden by the Azure Pipeline for each specific service.
 
-Step 1.3: Create the kotlin-docker-build.yml Template
+# -- Deployment Configuration --
+replicaCount: 1
 
-Create the file pipelines/build/kotlin-docker-build.yml and paste the following code into it. This template is responsible for building the app, running tests, determining the correct image tag, and (if not a PR) pushing the image to ACR.
+image:
+  repository: placeholder/image # This will be overridden by the pipeline
+  pullPolicy: IfNotPresent
+  tag: "latest" # This will also be overridden by the pipeline
 
-Generated yaml
-# FILE: /pipelines/build/kotlin-docker-build.yml
-# This template builds a Kotlin App, runs tests, and pushes a Docker image to ACR.
+# -- Service Configuration --
+service:
+  type: ClusterIP
+  port: 8080 # The port your application container listens on
 
-parameters:
-  # These are inputs that the application pipeline will provide.
-  - name: serviceName  # e.g., 'my-kotlin-app'
-    type: string
-  - name: acrName       # The name of your Azure Container Registry
-    type: string
-  - name: acrConnection # The name of your ACR Service Connection in Azure DevOps
-    type: string
+# -- Ingress/Routing Configuration --
+# For NGINX VirtualServer resources
+virtualServer:
+  enabled: true
+  host: "placeholder.example.com" # Overridden by pipeline per environment
 
-stages:
-- stage: Build
-  displayName: 'Build and Push Application'
-  jobs:
-  - job: BuildJob
-    displayName: 'Build, Test & Push Docker Image'
-    pool:
-      vmImage: 'ubuntu-latest'
-    steps:
-      - task: Gradle@2
-        displayName: 'Run Unit Tests & Build with Gradle'
-        inputs:
-          tasks: 'build' # This task typically runs tests and compiles the JAR
-          publishJUnitResults: true
-          javaHomeOption: 'JDKVersion'
-          jdkVersionOption: '1.17' # Or your project's JDK version
-
-      # This is the core logic for versioning based on the environment/branch.
-      - bash: |
-          BRANCH_NAME="$(Build.SourceBranchName)"
-          TAG_NAME="$(Build.SourceBranch)"
-
-          if [[ $TAG_NAME == "refs/tags/v"* ]]; then
-            # PROD: For a Git tag like 'v1.2.3', the image tag becomes '1.2.3'
-            VERSION_TAG=${TAG_NAME#refs/tags/v}
-          elif [[ $BRANCH_NAME == "develop" ]]; then
-            # DEV: For the 'develop' branch, use 'dev-' plus the short commit hash
-            VERSION_TAG="dev-$(Build.SourceVersion)"
-          else
-            # QA: For other branches (e.g., 'release/1.2.3'), create 'release-1-2-3-rc'
-            CLEAN_BRANCH_NAME=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9]/-/g')
-            VERSION_TAG="$CLEAN_BRANCH_NAME-rc"
-          fi
-
-          echo "Determined Image Tag: $VERSION_TAG"
-          
-          # This line makes the tag available to other stages/jobs as an output variable
-          echo "##vso[task.setvariable variable=imageTag;isOutput=true]$VERSION_TAG"
-        displayName: 'Determine Image Tag'
-        name: SetImageTag # We need this name to reference the output variable later
-
-      - task: Docker@2
-        displayName: 'Build and Push Docker Image to ACR'
-        # This step is skipped for Pull Request validation builds to save time
-        condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
-        inputs:
-          containerRegistry: ${{ parameters.acrConnection }}
-          repository: ${{ parameters.serviceName }}
-          command: 'buildAndPush'
-          dockerfile: '**/Dockerfile'
-          tags: '$(SetImageTag.imageTag)' # Use the tag we just determined
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Yaml
-IGNORE_WHEN_COPYING_END
-
-Step 1.4: Commit and Push the Template
-
-Commit your new template to the cicd-platform repository.
-
-Generated bash
-git add .
-git commit -m "feat: create initial build template for Kotlin apps"
-git push origin main
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Bash
-IGNORE_WHEN_COPYING_END
-
-You have now completed your first major goal! The cicd-platform repo exists and contains a versioned, reusable build template.
-
-Phase 2: Create and Test the Application Pipeline
-
-Now we will act as an application developer. We'll create a simple pipeline in the application's repository that uses the template we just built. Our goal is to verify that the image tags are generated correctly for each environment.
-
-Step 2.1: Prepare Your kotlin-sample-app Repository
-
-Make sure you have a repository for your application (e.g., kotlin-sample-app).
-
-Ensure it contains a Dockerfile at the root.
-
-Generated Dockerfile
-# Dockerfile
-FROM openjdk:17-jdk-slim
-ARG JAR_FILE=build/libs/*.jar
-COPY ${JAR_FILE} app.jar
-ENTRYPOINT ["java","-jar","/app.jar"]
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Dockerfile
-IGNORE_WHEN_COPYING_END
-
-Ensure it has a build.gradle.kts or build.gradle file so the Gradle task can run.
-
-Step 2.2: Create the Application's azure-pipelines.yml
-
-In the root of your kotlin-sample-app repository, create the following azure-pipelines.yml file.
-
-Generated yaml
-# FILE: /azure-pipelines.yml (in your application repo)
-
-trigger:
-  branches:
-    include:
-      - main
-      - develop
-      - release/*
-  tags:
-    include:
-      - v*.*.*
-
-# This 'resources' block is how you subscribe to the platform repo
-resources:
-  repositories:
-    - repository: templates # A friendly name for the platform repo
-      type: git
-      name: YourProject/cicd-platform # The name of your templates repo
-      ref: main # For now, we point to 'main'. Later, we'll pin this to a tag like 'v1.0.0'.
-
-variables:
-  # Application-specific variables
-  - name: serviceName
-    value: 'kotlin-sample-app'
-  - name: acrName
-    value: 'yourACRName' # IMPORTANT: Change this to your actual ACR name
-  - name: acrConnection
-    value: 'acr-service-connection' # The name of your ACR service connection
-
-stages:
-# Call the build template from the platform repo
-- template: pipelines/build/kotlin-docker-build.yml@templates
+# -- Secret Management Configuration --
+# For the CSI Secret Store Driver
+secretProvider:
+  enabled: true
+  provider: "azure" # The CSI driver you use (e.g., 'azure', 'vault')
   parameters:
-    # Pass the required parameters to the template
-    serviceName: $(serviceName)
-    acrName: $(acrName)
-    acrConnection: $(acrConnection)
+    keyvaultName: "placeholder-kv" # Overridden by pipeline per environment
+    tenantId: "placeholder-tenant-id" # Your Azure Tenant ID
 
-# This is a temporary stage for validation ONLY.
-# It helps us see the generated tag without needing a full deployment.
-- stage: Validate
-  displayName: 'Validate Image Tag'
-  dependsOn: Build
-  # We need to get the output variable from the Build stage
-  variables:
-    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
-  jobs:
-    - job: PrintTag
-      steps:
-        - bash: |
-            echo "************************************************"
-            echo "The generated image tag is: $(imageTag)"
-            echo "************************************************"
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Yaml
-IGNORE_WHEN_COPYING_END
+    # This is the key to flexibility: a list of secrets to be fetched.
+    # The application's pipeline will provide the actual list.
+    secrets: []
+    # Example of how it will be used in the pipeline:
+    # secrets:
+    # - name: DATABASE-URL       # Name of the secret in Key Vault
+    #   alias: DB_URL           # Optional alias for the ENV var name
+    # - name: API-KEY
 
-Step 2.3: Set Up the Pipeline in Azure DevOps
-
-Commit and push the azure-pipelines.yml file to your kotlin-sample-app repo.
-
-In Azure DevOps, go to Pipelines > New pipeline.
-
-Select Azure Repos Git, choose your kotlin-sample-app repository.
-
-Select Existing Azure Pipelines YAML file and click Run.
-
-Step 2.4: Test the Image Tag Generation for Each Environment
-
-Now, perform the following Git operations in your kotlin-sample-app repository and observe the pipeline output in Azure DevOps.
-
-Test the dev environment:
-
-Create and push the develop branch.
-
-Generated bash
-git checkout -b develop
-git push -u origin develop
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Bash
-IGNORE_WHEN_COPYING_END
-
-Check the pipeline log: The pipeline will run. In the "Validate Image Tag" stage, you will see the output:
-
-The generated image tag is: dev-a1b2c3d4... (with your commit hash)
-
-Test the qa environment:
-
-Create and push a release branch from develop.
-
-Generated bash
-git checkout -b release/1.0.0
-git push -u origin release/1.0.0
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Bash
-IGNORE_WHEN_COPYING_END
-
-Check the pipeline log: A new pipeline run will start. The output will be:
-
-The generated image tag is: release-1-0-0-rc
-
-Test the prod environment:
-
-Create and push a version tag.
-
-Generated bash
-git checkout main
-git tag v1.0.0
-git push origin v1.0.0
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Bash
-IGNORE_WHEN_COPYING_END
-
-Check the pipeline log: The tag push will trigger a pipeline run. The output will be:
-
-The generated image tag is: 1.0.0
-
-Summary of What You've Accomplished
-
-You have successfully created a centralized platform repository.
-
-You have a reusable, templatized build process.
-
-You have proven that your application pipeline can consume this template.
-
-Most importantly, you have verified that the image tagging logic works exactly as designed for your Dev, QA, and Prod workflows.
-
-You are now in a perfect position to proceed with creating the deployment template.
+# -- Additional Configuration --
+# A place for any non-secret environment variables
+extraEnvs: {}
+#  Example:
+#  extraEnvs:
+#    LOGGING_LEVEL: "INFO"
+#    SPRING_PROFILES_ACTIVE: "dev"
 
 
-# FILE: /azure-pipelines.yml (in your application repo)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: {{ .Release.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          # Inject non-secret environment variables
+          env:
+          {{- range $key, $val := .Values.extraEnvs }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+          {{- end }}
+          # Inject all secrets from the CSI-created Kubernetes secret
+          {{- if and .Values.secretProvider.enabled .Values.secretProvider.parameters.secrets }}
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+          {{- end }}
+          # Mount the secrets as files (optional but good practice)
+          {{- if and .Values.secretProvider.enabled .Values.secretProvider.parameters.secrets }}
+          volumeMounts:
+            - name: secrets-store-volume
+              mountPath: "/mnt/secrets-store"
+              readOnly: true
+          {{- end }}
+      # Define the volume that uses the CSI driver
+      {{- if and .Values.secretProvider.enabled .Values.secretProvider.parameters.secrets }}
+      volumes:
+        - name: secrets-store-volume
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ .Release.Name }}-spc
+      {{- end }}
 
-# CI trigger for direct pushes to these branches
-trigger:
-  branches:
-    include:
-      - main
-      - develop
-      - release/*
-  tags:
-    include:
-      - v*.*.*
 
-# PR trigger for pull requests targeting these branches
-pr:
-  branches:
-    include:
-      - main
-      - develop
-      - release/*
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: {{ .Release.Name }}
 
-resources:
-  repositories:
-    - repository: templates
-      type: git
-      name: YourProject/cicd-platform
-      ref: main
 
-variables:
-  - name: serviceName
-    value: 'kotlin-sample-app'
-  - name: acrName
-    value: 'yourACRName'
-  - name: acrConnection
-    value: 'acr-service-connection'
-
-stages:
-- template: pipelines/build/kotlin-docker-build.yml@templates
+{{- if and .Values.secretProvider.enabled .Values.secretProvider.parameters.secrets }}
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: {{ .Release.Name }}-spc
+spec:
+  provider: {{ .Values.secretProvider.provider }}
+  # This section tells the CSI driver to create a native Kubernetes secret
+  # which our Deployment's 'envFrom' can then use.
+  secretObjects:
+  - secretName: {{ .Release.Name }}-secrets
+    type: Opaque
+    data:
+    {{- range .Values.secretProvider.parameters.secrets }}
+    - objectName: {{ .name }}
+      # The key in the k8s secret will be the alias if provided, otherwise the original name.
+      # This becomes the environment variable name in the container.
+      key: {{ .alias | default .name }}
+    {{- end }}
   parameters:
-    serviceName: $(serviceName)
-    acrName: $(acrName)
-    acrConnection: $(acrConnection)
+    keyvaultName: {{ .Values.secretProvider.parameters.keyvaultName | quote }}
+    tenantId: {{ .Values.secretProvider.parameters.tenantId | quote }}
+    # This section tells the driver which objects to fetch from Key Vault
+    objects: |
+      array:
+        {{- range .Values.secretProvider.parameters.secrets }}
+        - |
+          objectName: {{ .name }}
+          objectType: secret
+        {{- end }}
+{{- end }}
 
-# The temporary validation stage can be removed now or kept for testing.
-# For a real PR, the important part is the build stage succeeding or failing.
-- stage: Validate
-  displayName: 'Validate Image Tag'
-  dependsOn: Build
-  variables:
-    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
-  jobs:
-    - job: PrintTag
-      steps:
-        - bash: |
-            echo "************************************************"
-            echo "PR Build Reason: $(Build.Reason)"
-            echo "The generated image tag is: $(imageTag)"
-            echo "************************************************"
 
-      - task: Docker@2
-        displayName: 'Build and Push Docker Image to ACR'
-        # This condition is the key!
-        condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
-        inputs:
-          containerRegistry: ${{ parameters.acrConnection }}
-          # ... rest of inputs
+# From the root of your cicd-platform repo
+git add charts/
+git commit -m "feat: create common-app Helm chart for microservices"
+git push
