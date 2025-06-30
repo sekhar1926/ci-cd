@@ -1,188 +1,196 @@
 # ===================================================================================
-# ==         MULTI-REGION, MULTI-ENVIRONMENT DEPLOYMENT TEMPLATE (v2.1)          ==
+# ==                 MICROSERVICE CI/CD PIPELINE (order-service)                 ==
 # ===================================================================================
 #
-# This template orchestrates deployments to DEV (single-region) and QA/PROD (dual-region).
-# CORRECTED SYNTAX for pool and strategy blocks.
+# This pipeline is the single source of truth for building and deploying this specific
+# microservice.
+#
+# It does not contain complex logic. Instead, it defines application-specific
+# configuration and calls reusable templates from the central 'cicd-platform' repo.
 #
 
-parameters:
-  # ... (All parameters are the same as before)
+# --- Triggers: Defines WHEN this pipeline runs ---
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+  tags:
+    include:
+      - v*.*.* # Trigger for production deployments
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+
+# --- Resources: Connects to the central CI/CD platform templates ---
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      # IMPORTANT: Replace 'YourProject' with your actual Azure DevOps project name.
+      name: YourProject/cicd-platform
+      # BEST PRACTICE: For production stability, pin this to a specific version tag
+      # of your platform repo, e.g., 'refs/tags/v1.0.0'
+      ref: main
+
+# --- Variables: Defines the unique configuration for THIS microservice ---
+variables:
+  # --- Global Info for this Service ---
   - name: serviceName
-    type: string
+    value: 'order-service'
   - name: acrName
-    type: string
+    value: 'mycompanyacr' # Your Azure Container Registry name
   - name: chartPath
-    type: string
+    value: 'charts/common-app' # Path to the chart in the platform repo
+
+  # --- Agent Pool Names for each Environment ---
   - name: devAgentPoolName
-    type: string
+    value: 'Dev-General-Pool'
   - name: qaAgentPoolName
-    type: string
+    value: 'QA-General-Pool'
   - name: prodAgentPoolName
-    type: string
+    value: 'Prod-Secure-Pool'
+    
+  # --- Service Connection Names (as configured in Azure DevOps) ---
+  - name: acrConnection
+    value: 'acr-service-connection'
   - name: devAKSConnection
-    type: string
+    value: 'dev-aks-sc'
   - name: qaRegion1AKSConnection
-    type: string
+    value: 'qa-eastus-aks-sc'
   - name: qaRegion2AKSConnection
-    type: string
+    value: 'qa-westus-aks-sc'
   - name: prodRegion1AKSConnection
-    type: string
+    value: 'prod-eastus-aks-sc'
   - name: prodRegion2AKSConnection
-    type: string
-  - name: devOverrideValues
-    type: string
-    default: ''
-  - name: qaOverrideValues
-    type: string
-    default: ''
-  - name: prodOverrideValues
-    type: string
-    default: ''
+    value: 'prod-westus-aks-sc'
 
+# --- Stages: The sequence of operations, executed by calling templates ---
 stages:
-# ============================== DEPLOY TO DEV (Single Region) ==============================
-- stage: Deploy_Dev
-  displayName: 'Deploy to Dev Environment'
-  dependsOn: Build
-  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
-  variables:
-    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
-  jobs:
-  - deployment: DeployToDevAKS
-    displayName: 'Deploy Helm Chart to DEV AKS'
-    environment: 'DEV Environment'
-    pool:
-      name: ${{ parameters.devAgentPoolName }}
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: HelmDeploy@0
-            inputs:
-              connectionType: 'AzureResourceGroup'
-              azureSubscription: ${{ parameters.devAKSConnection }}
-              namespace: '${{ parameters.serviceName }}-dev'
-              command: 'upgrade'
-              chartType: 'FilePath'
-              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
-              releaseName: '${{ parameters.serviceName }}'
-              install: true
-              overrideValues: |
-                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
-                image.tag=$(imageTag)
-                ${{ parameters.devOverrideValues }}
+# STAGE 1: Build the application using the build template from the platform repo
+- template: pipelines/build/kotlin-docker-build.yml@templates
+  parameters:
+    serviceName: $(serviceName)
+    acrName: $(acrName)
+    acrConnection: $(acrConnection)
+    # The build process can use the development agent pool
+    agentPoolName: $(devAgentPoolName)
 
-# ============================== DEPLOY TO QA (Dual Region) ===============================
-- stage: Deploy_QA
-  displayName: 'Deploy to QA Environments (Dual Region)'
-  dependsOn: Build
-  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
-  variables:
-    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
-  jobs:
-  # --- QA Region 1 Job ---
-  - deployment: DeployToQARegion1
-    displayName: 'Deploy to QA Region 1'
-    environment: 'QA Environment - Region 1'
-    pool:
-      name: ${{ parameters.qaAgentPoolName }}
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: HelmDeploy@0
-            inputs:
-              connectionType: 'AzureResourceGroup'
-              azureSubscription: ${{ parameters.qaRegion1AKSConnection }}
-              namespace: '${{ parameters.serviceName }}-qa'
-              command: 'upgrade'
-              chartType: 'FilePath'
-              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
-              releaseName: '${{ parameters.serviceName }}'
-              install: true
-              overrideValues: |
-                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
-                image.tag=$(imageTag)
-                ${{ parameters.qaOverrideValues }}
-  # --- QA Region 2 Job (runs in parallel) ---
-  - deployment: DeployToQARegion2
-    displayName: 'Deploy to QA Region 2'
-    environment: 'QA Environment - Region 2'
-    pool:
-      name: ${{ parameters.qaAgentPoolName }}
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: HelmDeploy@0
-            inputs:
-              connectionType: 'AzureResourceGroup'
-              azureSubscription: ${{ parameters.qaRegion2AKSConnection }}
-              namespace: '${{ parameters.serviceName }}-qa'
-              command: 'upgrade'
-              chartType: 'FilePath'
-              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
-              releaseName: '${{ parameters.serviceName }}'
-              install: true
-              overrideValues: |
-                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
-                image.tag=$(imageTag)
-                ${{ parameters.qaOverrideValues }}
+# STAGE 2: Deploy the application using the full multi-region, multi-stage deploy template
+- template: pipelines/deploy/aks-helm-deploy.yml@templates
+  parameters:
+    # --- Pass standard parameters ---
+    serviceName: $(serviceName)
+    acrName: $(acrName)
+    chartPath: $(chartPath)
+    
+    # --- Pass agent pool parameters ---
+    devAgentPoolName: $(devAgentPoolName)
+    qaAgentPoolName: $(qaAgentPoolName)
+    prodAgentPoolName: $(prodAgentPoolName)
+    
+    # --- Pass all regional service connections ---
+    devAKSConnection: $(devAKSConnection)
+    qaRegion1AKSConnection: $(qaRegion1AKSConnection)
+    qaRegion2AKSConnection: $(qaRegion2AKSConnection)
+    prodRegion1AKSConnection: $(prodRegion1AKSConnection)
+    prodRegion2AKSConnection: $(prodRegion2AKSConnection)
+    
+    # ==============================================================================
+    # ==     ENVIRONMENT-SPECIFIC CONFIGURATION FOR 'order-service'               ==
+    # ==============================================================================
+    #
+    # These multi-line YAML blocks are the "payload" that configures the Helm chart
+    # for each specific environment.
 
-# ============================= DEPLOY TO PROD (Dual Region) ==============================
-- stage: Deploy_Prod
-  displayName: 'Deploy to Prod Environments (Dual Region)'
-  dependsOn: Build
-  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
-  variables:
-    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
-  jobs:
-  # --- Prod Region 1 Job ---
-  - deployment: DeployToProdRegion1
-    displayName: 'Deploy to Prod Region 1'
-    environment: 'PROD Environment - Region 1'
-    pool:
-      name: ${{ parameters.prodAgentPoolName }}
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: HelmDeploy@0
-            inputs:
-              connectionType: 'AzureResourceGroup'
-              azureSubscription: ${{ parameters.prodRegion1AKSConnection }}
-              namespace: '${{ parameters.serviceName }}-prod'
-              command: 'upgrade'
-              chartType: 'FilePath'
-              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
-              releaseName: '${{ parameters.serviceName }}'
-              install: true
-              overrideValues: |
-                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
-                image.tag=$(imageTag)
-                ${{ parameters.prodOverrideValues }}
-  # --- Prod Region 2 Job (runs in parallel) ---
-  - deployment: DeployToProdRegion2
-    displayName: 'Deploy to Prod Region 2'
-    environment: 'PROD Environment - Region 2'
-    pool:
-      name: ${{ parameters.prodAgentPoolName }}
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: HelmDeploy@0
-            inputs:
-              connectionType: 'AzureResourceGroup'
-              azureSubscription: ${{ parameters.prodRegion2AKSConnection }}
-              namespace: '${{ parameters.serviceName }}-prod'
-              command: 'upgrade'
-              chartType: 'FilePath'
-              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
-              releaseName: '${{ parameters.serviceName }}'
-              install: true
-              overrideValues: |
-                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
-                image.tag=$(imageTag)
-                ${{ parameters.prodOverrideValues }}
+    # --- CONFIGURATION FOR THE DEV ENVIRONMENT ---
+    devOverrideValues: |
+      replicaCount: 1
+      virtualServerRoute:
+        path: "/orders"
+        parentVirtualServerName: "my-company-dev-vs"
+        parentVirtualServerNamespace: "nginx-ingress"
+      extraEnvs:
+        SPRING_PROFILES_ACTIVE: "dev"
+        LOGGING_LEVEL: "DEBUG"
+        CACHE_ENABLED: "false"
+        PAYMENT_GATEWAY_TIMEOUT_MS: "10000"
+        FEATURE_FLAG_NEW_CHECKOUT: "true"
+      secretProvider:
+        parameters:
+          keyvaultName: "order-service-dev-kv"
+          tenantId: "YOUR_AZURE_TENANT_ID"
+          secrets:
+          - name: order-db-connection-string
+            alias: DB_CONNECTION_STRING
+          - name: rabbitmq-connection-string
+            alias: AMQP_URL
+          - name: payment-gateway-api-key
+            alias: PAYMENT_API_KEY
+          - name: shipping-service-auth-token
+            alias: SHIPPING_SVC_TOKEN
+          - name: redis-password
+            alias: REDIS_PASS
+
+    # --- CONFIGURATION FOR THE QA ENVIRONMENT ---
+    qaOverrideValues: |
+      replicaCount: 2
+      virtualServerRoute:
+        path: "/orders"
+        parentVirtualServerName: "my-company-qa-vs"
+        parentVirtualServerNamespace: "nginx-ingress"
+      extraEnvs:
+        SPRING_PROFILES_ACTIVE: "qa"
+        LOGGING_LEVEL: "INFO"
+        CACHE_ENABLED: "true"
+        PAYMENT_GATEWAY_TIMEOUT_MS: "3000"
+        FEATURE_FLAG_NEW_CHECKOUT: "true"
+      secretProvider:
+        parameters:
+          keyvaultName: "order-service-qa-kv"
+          tenantId: "YOUR_AZURE_TENANT_ID"
+          secrets:
+          - name: qa-order-db-connection-string
+            alias: DB_CONNECTION_STRING
+          - name: qa-rabbitmq-connection-string
+            alias: AMQP_URL
+          - name: qa-payment-gateway-api-key
+            alias: PAYMENT_API_KEY
+          - name: qa-shipping-service-auth-token
+            alias: SHIPPING_SVC_TOKEN
+          - name: qa-redis-password
+            alias: REDIS_PASS
+
+    # --- CONFIGURATION FOR THE PROD ENVIRONMENT ---
+    prodOverrideValues: |
+      replicaCount: 5
+      virtualServerRoute:
+        path: "/orders"
+        parentVirtualServerName: "my-company-prod-vs"
+        parentVirtualServerNamespace: "nginx-ingress"
+      extraEnvs:
+        SPRING_PROFILES_ACTIVE: "prod"
+        LOGGING_LEVEL: "WARN"
+        CACHE_ENABLED: "true"
+        PAYMENT_GATEWAY_TIMEOUT_MS: "1500"
+        FEATURE_FLAG_NEW_CHECKOUT: "false"
+      secretProvider:
+        parameters:
+          keyvaultName: "order-service-prod-kv"
+          tenantId: "YOUR_AZURE_TENANT_ID"
+          secrets:
+          - name: prod-order-db-connection-string
+            alias: DB_CONNECTION_STRING
+          - name: prod-rabbitmq-connection-string
+            alias: AMQP_URL
+          - name: prod-payment-gateway-api-key
+            alias: PAYMENT_API_KEY
+          - name: prod-shipping-service-auth-token
+            alias: SHIPPING_SVC_TOKEN
+          - name: prod-redis-password
+            alias: REDIS_PASS
