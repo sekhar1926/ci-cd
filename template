@@ -1,196 +1,83 @@
 # ===================================================================================
-# ==                 MICROSERVICE CI/CD PIPELINE (order-service)                 ==
+# ==                       UNIVERSAL BUILD TEMPLATE (v2)                         ==
 # ===================================================================================
 #
-# This pipeline is the single source of truth for building and deploying this specific
-# microservice.
-#
-# It does not contain complex logic. Instead, it defines application-specific
-# configuration and calls reusable templates from the central 'cicd-platform' repo.
+# This template now hardcodes the build agent pool to 'MB_DevOps' to ensure
+# all builds run in the correct, secure environment with access to artifacts.
 #
 
-# --- Triggers: Defines WHEN this pipeline runs ---
-trigger:
-  branches:
-    include:
-      - main
-      - develop
-      - release/*
-  tags:
-    include:
-      - v*.*.* # Trigger for production deployments
-
-pr:
-  branches:
-    include:
-      - main
-      - develop
-      - release/*
-
-# --- Resources: Connects to the central CI/CD platform templates ---
-resources:
-  repositories:
-    - repository: templates
-      type: git
-      # IMPORTANT: Replace 'YourProject' with your actual Azure DevOps project name.
-      name: YourProject/cicd-platform
-      # BEST PRACTICE: For production stability, pin this to a specific version tag
-      # of your platform repo, e.g., 'refs/tags/v1.0.0'
-      ref: main
-
-# --- Variables: Defines the unique configuration for THIS microservice ---
-variables:
-  # --- Global Info for this Service ---
+parameters:
+  # The 'agentPoolName' parameter has been REMOVED.
   - name: serviceName
-    value: 'order-service'
+    type: string
   - name: acrName
-    value: 'mycompanyacr' # Your Azure Container Registry name
-  - name: chartPath
-    value: 'charts/common-app' # Path to the chart in the platform repo
-
-  # --- Agent Pool Names for each Environment ---
-  - name: devAgentPoolName
-    value: 'Dev-General-Pool'
-  - name: qaAgentPoolName
-    value: 'QA-General-Pool'
-  - name: prodAgentPoolName
-    value: 'Prod-Secure-Pool'
-    
-  # --- Service Connection Names (as configured in Azure DevOps) ---
+    type: string
   - name: acrConnection
-    value: 'acr-service-connection'
-  - name: devAKSConnection
-    value: 'dev-aks-sc'
-  - name: qaRegion1AKSConnection
-    value: 'qa-eastus-aks-sc'
-  - name: qaRegion2AKSConnection
-    value: 'qa-westus-aks-sc'
-  - name: prodRegion1AKSConnection
-    value: 'prod-eastus-aks-sc'
-  - name: prodRegion2AKSConnection
-    value: 'prod-westus-aks-sc'
+    type: string
 
-# --- Stages: The sequence of operations, executed by calling templates ---
 stages:
-# STAGE 1: Build the application using the build template from the platform repo
-- template: pipelines/build/kotlin-docker-build.yml@templates
-  parameters:
-    serviceName: $(serviceName)
-    acrName: $(acrName)
-    acrConnection: $(acrConnection)
-    # The build process can use the development agent pool
-    agentPoolName: $(devAgentPoolName)
+- stage: Build
+  displayName: 'Build and Push Application'
+  jobs:
+  - job: BuildJob
+    displayName: 'Build, Test & Push Docker Image'
+    pool:
+      # THIS IS THE KEY CHANGE: The pool is now hardcoded.
+      name: 'MB_DevOps'
+    steps:
+      # ... (All other steps for Gradle, image tagging, and Docker push remain exactly the same)
+      - task: Gradle@2
+        displayName: 'Run Unit Tests & Build with Gradle'
+        inputs:
+          tasks: 'build'
+          publishJUnitResults: true
+          javaHomeOption: 'JDKVersion'
+          jdkVersionOption: '1.17'
 
-# STAGE 2: Deploy the application using the full multi-region, multi-stage deploy template
-- template: pipelines/deploy/aks-helm-deploy.yml@templates
-  parameters:
-    # --- Pass standard parameters ---
-    serviceName: $(serviceName)
-    acrName: $(acrName)
-    chartPath: $(chartPath)
-    
-    # --- Pass agent pool parameters ---
-    devAgentPoolName: $(devAgentPoolName)
-    qaAgentPoolName: $(qaAgentPoolName)
-    prodAgentPoolName: $(prodAgentPoolName)
-    
-    # --- Pass all regional service connections ---
-    devAKSConnection: $(devAKSConnection)
-    qaRegion1AKSConnection: $(qaRegion1AKSConnection)
-    qaRegion2AKSConnection: $(qaRegion2AKSConnection)
-    prodRegion1AKSConnection: $(prodRegion1AKSConnection)
-    prodRegion2AKSConnection: $(prodRegion2AKSConnection)
-    
-    # ==============================================================================
-    # ==     ENVIRONMENT-SPECIFIC CONFIGURATION FOR 'order-service'               ==
-    # ==============================================================================
-    #
-    # These multi-line YAML blocks are the "payload" that configures the Helm chart
-    # for each specific environment.
+      - bash: |
+          # ... (script to determine image tag)
+          BRANCH_NAME="$(Build.SourceBranchName)"
+          TAG_NAME="$(Build.SourceBranch)"
+          if [[ $TAG_NAME == "refs/tags/v"* ]]; then
+            VERSION_TAG=${TAG_NAME#refs/tags/v}
+          elif [[ $BRANCH_NAME == "develop" ]]; then
+            VERSION_TAG="dev-$(Build.SourceVersion)"
+          else
+            CLEAN_BRANCH_NAME=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9]/-/g')
+            VERSION_TAG="$CLEAN_BRANCH_NAME-rc"
+          fi
+          echo "Determined Image Tag: $VERSION_TAG"
+          echo "##vso[task.setvariable variable=imageTag;isOutput=true]$VERSION_TAG"
+        displayName: 'Determine Image Tag'
+        name: SetImageTag
 
-    # --- CONFIGURATION FOR THE DEV ENVIRONMENT ---
-    devOverrideValues: |
-      replicaCount: 1
-      virtualServerRoute:
-        path: "/orders"
-        parentVirtualServerName: "my-company-dev-vs"
-        parentVirtualServerNamespace: "nginx-ingress"
-      extraEnvs:
-        SPRING_PROFILES_ACTIVE: "dev"
-        LOGGING_LEVEL: "DEBUG"
-        CACHE_ENABLED: "false"
-        PAYMENT_GATEWAY_TIMEOUT_MS: "10000"
-        FEATURE_FLAG_NEW_CHECKOUT: "true"
-      secretProvider:
-        parameters:
-          keyvaultName: "order-service-dev-kv"
-          tenantId: "YOUR_AZURE_TENANT_ID"
-          secrets:
-          - name: order-db-connection-string
-            alias: DB_CONNECTION_STRING
-          - name: rabbitmq-connection-string
-            alias: AMQP_URL
-          - name: payment-gateway-api-key
-            alias: PAYMENT_API_KEY
-          - name: shipping-service-auth-token
-            alias: SHIPPING_SVC_TOKEN
-          - name: redis-password
-            alias: REDIS_PASS
+      - task: AzureCLI@2
+        # ... (script to check if image exists in ACR)
+        displayName: 'Check if Docker image already exists in ACR'
+        name: CheckACR
+        inputs:
+          azureSubscription: ${{ parameters.acrConnection }}
+          scriptType: 'bash'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            IMAGE_TAG=$(SetImageTag.imageTag)
+            MANIFEST=$(az acr repository show-manifests --name ${{ parameters.acrName }} --repository ${{ parameters.serviceName }} --query "[?tags[0]=='$IMAGE_TAG']" -o tsv) || true
+            if [[ -n "$MANIFEST" ]]; then
+              echo "Image with tag $IMAGE_TAG already exists. Skipping build."
+              echo "##vso[task.setvariable variable=ImageExists;isOutput=true]true"
+            else
+              echo "Image with tag $IMAGE_TAG not found. Proceeding with build."
+              echo "##vso[task.setvariable variable=ImageExists;isOutput=true]false"
+            fi
 
-    # --- CONFIGURATION FOR THE QA ENVIRONMENT ---
-    qaOverrideValues: |
-      replicaCount: 2
-      virtualServerRoute:
-        path: "/orders"
-        parentVirtualServerName: "my-company-qa-vs"
-        parentVirtualServerNamespace: "nginx-ingress"
-      extraEnvs:
-        SPRING_PROFILES_ACTIVE: "qa"
-        LOGGING_LEVEL: "INFO"
-        CACHE_ENABLED: "true"
-        PAYMENT_GATEWAY_TIMEOUT_MS: "3000"
-        FEATURE_FLAG_NEW_CHECKOUT: "true"
-      secretProvider:
-        parameters:
-          keyvaultName: "order-service-qa-kv"
-          tenantId: "YOUR_AZURE_TENANT_ID"
-          secrets:
-          - name: qa-order-db-connection-string
-            alias: DB_CONNECTION_STRING
-          - name: qa-rabbitmq-connection-string
-            alias: AMQP_URL
-          - name: qa-payment-gateway-api-key
-            alias: PAYMENT_API_KEY
-          - name: qa-shipping-service-auth-token
-            alias: SHIPPING_SVC_TOKEN
-          - name: qa-redis-password
-            alias: REDIS_PASS
+      - task: Docker@2
+        displayName: 'Build and Push Docker Image to ACR'
+        condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), eq(variables['CheckACR.ImageExists'], 'false'))
+        inputs:
+          containerRegistry: ${{ parameters.acrConnection }}
+          repository: ${{ parameters.serviceName }}
+          command: 'buildAndPush'
+          dockerfile: '**/Dockerfile'
+          tags: '$(SetImageTag.imageTag)'
 
-    # --- CONFIGURATION FOR THE PROD ENVIRONMENT ---
-    prodOverrideValues: |
-      replicaCount: 5
-      virtualServerRoute:
-        path: "/orders"
-        parentVirtualServerName: "my-company-prod-vs"
-        parentVirtualServerNamespace: "nginx-ingress"
-      extraEnvs:
-        SPRING_PROFILES_ACTIVE: "prod"
-        LOGGING_LEVEL: "WARN"
-        CACHE_ENABLED: "true"
-        PAYMENT_GATEWAY_TIMEOUT_MS: "1500"
-        FEATURE_FLAG_NEW_CHECKOUT: "false"
-      secretProvider:
-        parameters:
-          keyvaultName: "order-service-prod-kv"
-          tenantId: "YOUR_AZURE_TENANT_ID"
-          secrets:
-          - name: prod-order-db-connection-string
-            alias: DB_CONNECTION_STRING
-          - name: prod-rabbitmq-connection-string
-            alias: AMQP_URL
-          - name: prod-payment-gateway-api-key
-            alias: PAYMENT_API_KEY
-          - name: prod-shipping-service-auth-token
-            alias: SHIPPING_SVC_TOKEN
-          - name: prod-redis-password
-            alias: REDIS_PASS
+
