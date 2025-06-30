@@ -299,3 +299,63 @@ You have proven that your application pipeline can consume this template.
 Most importantly, you have verified that the image tagging logic works exactly as designed for your Dev, QA, and Prod workflows.
 
 You are now in a perfect position to proceed with creating the deployment template.
+
+
+# FILE: /azure-pipelines.yml (in your application repo)
+
+# CI trigger for direct pushes to these branches
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+  tags:
+    include:
+      - v*.*.*
+
+# PR trigger for pull requests targeting these branches
+pr:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: YourProject/cicd-platform
+      ref: main
+
+variables:
+  - name: serviceName
+    value: 'kotlin-sample-app'
+  - name: acrName
+    value: 'yourACRName'
+  - name: acrConnection
+    value: 'acr-service-connection'
+
+stages:
+- template: pipelines/build/kotlin-docker-build.yml@templates
+  parameters:
+    serviceName: $(serviceName)
+    acrName: $(acrName)
+    acrConnection: $(acrConnection)
+
+# The temporary validation stage can be removed now or kept for testing.
+# For a real PR, the important part is the build stage succeeding or failing.
+- stage: Validate
+  displayName: 'Validate Image Tag'
+  dependsOn: Build
+  variables:
+    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
+  jobs:
+    - job: PrintTag
+      steps:
+        - bash: |
+            echo "************************************************"
+            echo "PR Build Reason: $(Build.Reason)"
+            echo "The generated image tag is: $(imageTag)"
+            echo "************************************************"
