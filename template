@@ -166,3 +166,27 @@ spec:
 git add charts/
 git commit -m "feat: create common-app Helm chart for microservices"
 git push
+
+{{- if .Values.virtualServerRoute.enabled }}
+apiVersion: k8s.nginx.org/v1
+kind: VirtualServerRoute
+metadata:
+  name: {{ .Release.Name }}-vsr
+spec:
+  # This section points to the master VirtualServer
+  host: {{ .Values.virtualServerRoute.parentVirtualServerName }}.{{ .Values.virtualServerRoute.parentVirtualServerNamespace }}.svc.cluster.local
+  subroutes:
+  - path: {{ .Values.virtualServerRoute.path }}
+    action:
+      # This tells NGINX to pass the traffic to our microservice's Service
+      pass: {{ .Release.Name }}
+{{- end }}
+
+virtualServerRoute:
+  enabled: true
+  # The namespace where the master VirtualServer lives (e.g., nginx-ingress)
+  parentVirtualServerNamespace: "nginx-ingress"
+  # The name of the master VirtualServer to attach to
+  parentVirtualServerName: "my-company-dev-vs"
+  # The path for this specific microservice
+  path: "/my-app" # This should be overridden by the pipeline
