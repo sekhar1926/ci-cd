@@ -359,3 +359,11 @@ stages:
             echo "PR Build Reason: $(Build.Reason)"
             echo "The generated image tag is: $(imageTag)"
             echo "************************************************"
+
+      - task: Docker@2
+        displayName: 'Build and Push Docker Image to ACR'
+        # This condition is the key!
+        condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+        inputs:
+          containerRegistry: ${{ parameters.acrConnection }}
+          # ... rest of inputs
