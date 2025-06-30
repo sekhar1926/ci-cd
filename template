@@ -1,0 +1,301 @@
+Excellent. Let's start this process methodically. This incremental approach is the best way to ensure each component works perfectly before moving to the next.
+
+Here is your detailed, step-by-step guide to achieve your first two goals.
+
+Phase 1: Create the Centralized cicd-platform Repository and Build Template
+
+Our goal here is to create the repository that will hold our CI/CD "blueprints" and populate it with our first template for building a Kotlin application.
+
+Step 1.1: Create and Clone the cicd-platform Repository
+
+In your Azure DevOps project, navigate to Repos > Files.
+
+Click the repository name at the top and select New repository.
+
+Name it cicd-platform and click Create.
+
+Clone this new, empty repository to your local machine:
+
+Generated bash
+git clone https://<YourOrg>@dev.azure.com/<YourOrg>/<YourProject>/_git/cicd-platform
+cd cicd-platform
+
+
+Step 1.2: Create the Build Template File Structure
+
+Inside your local cicd-platform folder, create the following directory structure. For now, we only need the build template.
+
+Generated code
+/cicd-platform
+|-- /pipelines
+|   |-- /build
+|   |   `-- kotlin-docker-build.yml   <-- This is our new template
+`-- README.md
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+IGNORE_WHEN_COPYING_END
+
+Step 1.3: Create the kotlin-docker-build.yml Template
+
+Create the file pipelines/build/kotlin-docker-build.yml and paste the following code into it. This template is responsible for building the app, running tests, determining the correct image tag, and (if not a PR) pushing the image to ACR.
+
+Generated yaml
+# FILE: /pipelines/build/kotlin-docker-build.yml
+# This template builds a Kotlin App, runs tests, and pushes a Docker image to ACR.
+
+parameters:
+  # These are inputs that the application pipeline will provide.
+  - name: serviceName  # e.g., 'my-kotlin-app'
+    type: string
+  - name: acrName       # The name of your Azure Container Registry
+    type: string
+  - name: acrConnection # The name of your ACR Service Connection in Azure DevOps
+    type: string
+
+stages:
+- stage: Build
+  displayName: 'Build and Push Application'
+  jobs:
+  - job: BuildJob
+    displayName: 'Build, Test & Push Docker Image'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - task: Gradle@2
+        displayName: 'Run Unit Tests & Build with Gradle'
+        inputs:
+          tasks: 'build' # This task typically runs tests and compiles the JAR
+          publishJUnitResults: true
+          javaHomeOption: 'JDKVersion'
+          jdkVersionOption: '1.17' # Or your project's JDK version
+
+      # This is the core logic for versioning based on the environment/branch.
+      - bash: |
+          BRANCH_NAME="$(Build.SourceBranchName)"
+          TAG_NAME="$(Build.SourceBranch)"
+
+          if [[ $TAG_NAME == "refs/tags/v"* ]]; then
+            # PROD: For a Git tag like 'v1.2.3', the image tag becomes '1.2.3'
+            VERSION_TAG=${TAG_NAME#refs/tags/v}
+          elif [[ $BRANCH_NAME == "develop" ]]; then
+            # DEV: For the 'develop' branch, use 'dev-' plus the short commit hash
+            VERSION_TAG="dev-$(Build.SourceVersion)"
+          else
+            # QA: For other branches (e.g., 'release/1.2.3'), create 'release-1-2-3-rc'
+            CLEAN_BRANCH_NAME=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9]/-/g')
+            VERSION_TAG="$CLEAN_BRANCH_NAME-rc"
+          fi
+
+          echo "Determined Image Tag: $VERSION_TAG"
+          
+          # This line makes the tag available to other stages/jobs as an output variable
+          echo "##vso[task.setvariable variable=imageTag;isOutput=true]$VERSION_TAG"
+        displayName: 'Determine Image Tag'
+        name: SetImageTag # We need this name to reference the output variable later
+
+      - task: Docker@2
+        displayName: 'Build and Push Docker Image to ACR'
+        # This step is skipped for Pull Request validation builds to save time
+        condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+        inputs:
+          containerRegistry: ${{ parameters.acrConnection }}
+          repository: ${{ parameters.serviceName }}
+          command: 'buildAndPush'
+          dockerfile: '**/Dockerfile'
+          tags: '$(SetImageTag.imageTag)' # Use the tag we just determined
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Yaml
+IGNORE_WHEN_COPYING_END
+
+Step 1.4: Commit and Push the Template
+
+Commit your new template to the cicd-platform repository.
+
+Generated bash
+git add .
+git commit -m "feat: create initial build template for Kotlin apps"
+git push origin main
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Bash
+IGNORE_WHEN_COPYING_END
+
+You have now completed your first major goal! The cicd-platform repo exists and contains a versioned, reusable build template.
+
+Phase 2: Create and Test the Application Pipeline
+
+Now we will act as an application developer. We'll create a simple pipeline in the application's repository that uses the template we just built. Our goal is to verify that the image tags are generated correctly for each environment.
+
+Step 2.1: Prepare Your kotlin-sample-app Repository
+
+Make sure you have a repository for your application (e.g., kotlin-sample-app).
+
+Ensure it contains a Dockerfile at the root.
+
+Generated Dockerfile
+# Dockerfile
+FROM openjdk:17-jdk-slim
+ARG JAR_FILE=build/libs/*.jar
+COPY ${JAR_FILE} app.jar
+ENTRYPOINT ["java","-jar","/app.jar"]
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Dockerfile
+IGNORE_WHEN_COPYING_END
+
+Ensure it has a build.gradle.kts or build.gradle file so the Gradle task can run.
+
+Step 2.2: Create the Application's azure-pipelines.yml
+
+In the root of your kotlin-sample-app repository, create the following azure-pipelines.yml file.
+
+Generated yaml
+# FILE: /azure-pipelines.yml (in your application repo)
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+  tags:
+    include:
+      - v*.*.*
+
+# This 'resources' block is how you subscribe to the platform repo
+resources:
+  repositories:
+    - repository: templates # A friendly name for the platform repo
+      type: git
+      name: YourProject/cicd-platform # The name of your templates repo
+      ref: main # For now, we point to 'main'. Later, we'll pin this to a tag like 'v1.0.0'.
+
+variables:
+  # Application-specific variables
+  - name: serviceName
+    value: 'kotlin-sample-app'
+  - name: acrName
+    value: 'yourACRName' # IMPORTANT: Change this to your actual ACR name
+  - name: acrConnection
+    value: 'acr-service-connection' # The name of your ACR service connection
+
+stages:
+# Call the build template from the platform repo
+- template: pipelines/build/kotlin-docker-build.yml@templates
+  parameters:
+    # Pass the required parameters to the template
+    serviceName: $(serviceName)
+    acrName: $(acrName)
+    acrConnection: $(acrConnection)
+
+# This is a temporary stage for validation ONLY.
+# It helps us see the generated tag without needing a full deployment.
+- stage: Validate
+  displayName: 'Validate Image Tag'
+  dependsOn: Build
+  # We need to get the output variable from the Build stage
+  variables:
+    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
+  jobs:
+    - job: PrintTag
+      steps:
+        - bash: |
+            echo "************************************************"
+            echo "The generated image tag is: $(imageTag)"
+            echo "************************************************"
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Yaml
+IGNORE_WHEN_COPYING_END
+
+Step 2.3: Set Up the Pipeline in Azure DevOps
+
+Commit and push the azure-pipelines.yml file to your kotlin-sample-app repo.
+
+In Azure DevOps, go to Pipelines > New pipeline.
+
+Select Azure Repos Git, choose your kotlin-sample-app repository.
+
+Select Existing Azure Pipelines YAML file and click Run.
+
+Step 2.4: Test the Image Tag Generation for Each Environment
+
+Now, perform the following Git operations in your kotlin-sample-app repository and observe the pipeline output in Azure DevOps.
+
+Test the dev environment:
+
+Create and push the develop branch.
+
+Generated bash
+git checkout -b develop
+git push -u origin develop
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Bash
+IGNORE_WHEN_COPYING_END
+
+Check the pipeline log: The pipeline will run. In the "Validate Image Tag" stage, you will see the output:
+
+The generated image tag is: dev-a1b2c3d4... (with your commit hash)
+
+Test the qa environment:
+
+Create and push a release branch from develop.
+
+Generated bash
+git checkout -b release/1.0.0
+git push -u origin release/1.0.0
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Bash
+IGNORE_WHEN_COPYING_END
+
+Check the pipeline log: A new pipeline run will start. The output will be:
+
+The generated image tag is: release-1-0-0-rc
+
+Test the prod environment:
+
+Create and push a version tag.
+
+Generated bash
+git checkout main
+git tag v1.0.0
+git push origin v1.0.0
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Bash
+IGNORE_WHEN_COPYING_END
+
+Check the pipeline log: The tag push will trigger a pipeline run. The output will be:
+
+The generated image tag is: 1.0.0
+
+Summary of What You've Accomplished
+
+You have successfully created a centralized platform repository.
+
+You have a reusable, templatized build process.
+
+You have proven that your application pipeline can consume this template.
+
+Most importantly, you have verified that the image tagging logic works exactly as designed for your Dev, QA, and Prod workflows.
+
+You are now in a perfect position to proceed with creating the deployment template.
