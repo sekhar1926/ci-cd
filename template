@@ -1,28 +1,13 @@
 # ===================================================================================
-# ==                 UNIVERSAL MULTI-STAGE DEPLOYMENT TEMPLATE                   ==
+# ==         MULTI-REGION, MULTI-ENVIRONMENT DEPLOYMENT TEMPLATE (v2)            ==
 # ===================================================================================
 #
-# This template orchestrates the deployment of a microservice to DEV, QA, and PROD
-# environments on AKS using a common Helm chart.
+# This template orchestrates deployments to DEV (single-region) and QA/PROD (dual-region).
 #
-# How it works:
-# 1. It is triggered by a main application pipeline after a successful build.
-# 2. It contains three distinct stages: 'Deploy_Dev', 'Deploy_QA', 'Deploy_Prod'.
-# 3. Each stage has a 'condition' that ensures it only runs for the correct
-#    Git branch or tag (e.g., 'develop' for Dev, 'release/*' for QA, 'v*' tag for Prod).
-# 4. It uses the 'HelmDeploy@0' task to install or upgrade the application.
-# 5. It dynamically constructs the 'overrideValues' for Helm by combining standard
-#    values (like the image tag) with a block of environment-specific values
-#    provided by the calling application pipeline.
-#
-# Parameters:
-#   - serviceName: The name of the microservice (e.g., 'order-service').
-#   - acrName: The name of your Azure Container Registry.
-#   - chartPath: The path to the common Helm chart within the 'cicd-platform' repo.
-#   - agentPoolName: The name of the self-hosted agent pool to use.
-#   - dev/qa/prod-AKSConnection: Service connection names for each AKS cluster.
-#   - dev/qa/prod-OverrideValues: YAML strings containing environment-specific
-#     configurations for the Helm chart.
+# Key Features:
+# - Environment-specific agent pools for granular control.
+# - Parallel deployment jobs for QA and PROD to deploy to two regions simultaneously.
+# - Independent approval gates for each region in QA and PROD environments.
 #
 
 parameters:
@@ -31,22 +16,32 @@ parameters:
     type: string
   - name: acrName
     type: string
-  - name: agentPoolName
-    type: string
 
-  # --- Helm Chart Path (within the templates repo) ---
+  # --- Helm Chart Path ---
   - name: chartPath
     type: string # e.g., 'charts/common-app'
     
-  # --- Service Connections for each environment's AKS cluster ---
-  - name: devAKSConnection
+  # --- NEW: Environment-Specific Agent Pools ---
+  - name: devAgentPoolName
     type: string
-  - name: qaAKSConnection
+  - name: qaAgentPoolName
     type: string
-  - name: prodAKSConnection
+  - name: prodAgentPoolName
     type: string
     
-  # --- Environment-specific override values (as multi-line YAML strings) ---
+  # --- Service Connections for each environment and region ---
+  - name: devAKSConnection
+    type: string
+  - name: qaRegion1AKSConnection
+    type: string
+  - name: qaRegion2AKSConnection
+    type: string
+  - name: prodRegion1AKSConnection
+    type: string
+  - name: prodRegion2AKSConnection
+    type: string
+    
+  # --- Environment-specific override values ---
   - name: devOverrideValues
     type: string
     default: ''
@@ -58,99 +53,72 @@ parameters:
     default: ''
 
 stages:
-# ============================== DEPLOY TO DEV ==============================
+# ============================== DEPLOY TO DEV (Single Region) ==============================
 - stage: Deploy_Dev
   displayName: 'Deploy to Dev Environment'
-  dependsOn: Build # Assumes a preceding stage named 'Build'
+  dependsOn: Build
   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
   variables:
-    # Fetches the image tag calculated in the 'Build' stage
     imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
   jobs:
   - deployment: DeployToDevAKS
-    displayName: 'Deploy Helm Chart to DEV AKS'
-    environment: 'DEV Environment' # Links to the ADO Environment for history/tracking
-    pool: { name: ${{ parameters.agentPoolName }} }
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: HelmDeploy@0
-            displayName: 'Execute Helm Upgrade for Dev'
-            inputs:
-              connectionType: 'AzureResourceGroup'
-              azureSubscription: ${{ parameters.devAKSConnection }}
-              namespace: '${{ parameters.serviceName }}-dev'
-              command: 'upgrade'
-              chartType: 'FilePath'
-              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
-              releaseName: ${{ parameters.serviceName }}
-              install: true
-              overrideValues: |
+    environment: 'DEV Environment'
+    pool: { name: ${{ parameters.devAgentPoolName }} } # Use dev-specific agent pool
+    strategy: { runOnce: { deploy: { steps: [ task: HelmDeploy@0, inputs: { connectionType: 'AzureResourceGroup', azureSubscription: ${{ parameters.devAKSConnection }}, namespace: '${{ parameters.serviceName }}-dev', command: 'upgrade', chartType: 'FilePath', chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}', releaseName: ${{ parameters.serviceName }}', install: true, overrideValues: |
                 image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
                 image.tag=$(imageTag)
-                ${{ parameters.devOverrideValues }}
+                ${{ parameters.devOverrideValues }}' } ] } } }
 
-# ============================== DEPLOY TO QA ===============================
+# ============================== DEPLOY TO QA (Dual Region) ===============================
 - stage: Deploy_QA
-  displayName: 'Deploy to QA Environment'
+  displayName: 'Deploy to QA Environments (Dual Region)'
   dependsOn: Build
   condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
   variables:
     imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
   jobs:
-  - deployment: DeployToQAAKS
-    displayName: 'Deploy Helm Chart to QA AKS'
-    environment: 'QA Environment' # This environment should have a manual approval check
-    pool: { name: ${{ parameters.agentPoolName }} }
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: HelmDeploy@0
-            displayName: 'Execute Helm Upgrade for QA'
-            inputs:
-              connectionType: 'AzureResourceGroup'
-              azureSubscription: ${{ parameters.qaAKSConnection }}
-              namespace: '${{ parameters.serviceName }}-qa'
-              command: 'upgrade'
-              chartType: 'FilePath'
-              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
-              releaseName: ${{ parameters.serviceName }}
-              install: true
-              overrideValues: |
+  # --- QA Region 1 Job ---
+  - deployment: DeployToQARegion1
+    displayName: 'Deploy to QA Region 1'
+    environment: 'QA Environment - Region 1' # Separate environment for separate approvals
+    pool: { name: ${{ parameters.qaAgentPoolName }} }
+    strategy: { runOnce: { deploy: { steps: [ task: HelmDeploy@0, inputs: { connectionType: 'AzureResourceGroup', azureSubscription: ${{ parameters.qaRegion1AKSConnection }}, namespace: '${{ parameters.serviceName }}-qa', command: 'upgrade', chartType: 'FilePath', chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}', releaseName: '${{ parameters.serviceName }}', install: true, overrideValues: |
                 image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
                 image.tag=$(imageTag)
-                ${{ parameters.qaOverrideValues }}
+                ${{ parameters.qaOverrideValues }}' } ] } } }
+  # --- QA Region 2 Job (runs in parallel) ---
+  - deployment: DeployToQARegion2
+    displayName: 'Deploy to QA Region 2'
+    environment: 'QA Environment - Region 2'
+    pool: { name: ${{ parameters.qaAgentPoolName }} }
+    strategy: { runOnce: { deploy: { steps: [ task: HelmDeploy@0, inputs: { connectionType: 'AzureResourceGroup', azureSubscription: ${{ parameters.qaRegion2AKSConnection }}, namespace: '${{ parameters.serviceName }}-qa', command: 'upgrade', chartType: 'FilePath', chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}', releaseName: '${{ parameters.serviceName }}', install: true, overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.qaOverrideValues }}' } ] } } }
 
-# ============================= DEPLOY TO PROD ==============================
+# ============================= DEPLOY TO PROD (Dual Region) ==============================
 - stage: Deploy_Prod
-  displayName: 'Deploy to Prod Environment'
+  displayName: 'Deploy to Prod Environments (Dual Region)'
   dependsOn: Build
   condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
   variables:
     imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
   jobs:
-  - deployment: DeployToProdAKS
-    displayName: 'Deploy Helm Chart to PROD AKS'
-    environment: 'PROD Environment' # This environment MUST have a strict manual approval check
-    pool: { name: ${{ parameters.agentPoolName }} }
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: HelmDeploy@0
-            displayName: 'Execute Helm Upgrade for Prod'
-            inputs:
-              connectionType: 'AzureResourceGroup'
-              azureSubscription: ${{ parameters.prodAKSConnection }}
-              namespace: '${{ parameters.serviceName }}-prod'
-              command: 'upgrade'
-              chartType: 'FilePath'
-              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
-              releaseName: ${{ parameters.serviceName }}
-              install: true
-              overrideValues: |
+  # --- Prod Region 1 Job ---
+  - deployment: DeployToProdRegion1
+    displayName: 'Deploy to Prod Region 1'
+    environment: 'PROD Environment - Region 1'
+    pool: { name: ${{ parameters.prodAgentPoolName }} }
+    strategy: { runOnce: { deploy: { steps: [ task: HelmDeploy@0, inputs: { connectionType: 'AzureResourceGroup', azureSubscription: ${{ parameters.prodRegion1AKSConnection }}, namespace: '${{ parameters.serviceName }}-prod', command: 'upgrade', chartType: 'FilePath', chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}', releaseName: '${{ parameters.serviceName }}', install: true, overrideValues: |
                 image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
                 image.tag=$(imageTag)
-                ${{ parameters.prodOverrideValues }}
+                ${{ parameters.prodOverrideValues }}' } ] } } }
+  # --- Prod Region 2 Job (runs in parallel) ---
+  - deployment: DeployToProdRegion2
+    displayName: 'Deploy to Prod Region 2'
+    environment: 'PROD Environment - Region 2'
+    pool: { name: ${{ parameters.prodAgentPoolName }} }
+    strategy: { runOnce: { deploy: { steps: [ task: HelmDeploy@0, inputs: { connectionType: 'AzureResourceGroup', azureSubscription: ${{ parameters.prodRegion2AKSConnection }}, namespace: '${{ parameters.serviceName }}-prod', command: 'upgrade', chartType: 'FilePath', chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}', releaseName: '${{ parameters.serviceName }}', install: true, overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.prodOverrideValues }}' } ] } } }
