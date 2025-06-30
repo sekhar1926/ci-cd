@@ -1,192 +1,156 @@
-apiVersion: v2
-name: common-app
-description: A common Helm chart for deploying standard microservices in our platform.
-type: application
+# ===================================================================================
+# ==                 UNIVERSAL MULTI-STAGE DEPLOYMENT TEMPLATE                   ==
+# ===================================================================================
+#
+# This template orchestrates the deployment of a microservice to DEV, QA, and PROD
+# environments on AKS using a common Helm chart.
+#
+# How it works:
+# 1. It is triggered by a main application pipeline after a successful build.
+# 2. It contains three distinct stages: 'Deploy_Dev', 'Deploy_QA', 'Deploy_Prod'.
+# 3. Each stage has a 'condition' that ensures it only runs for the correct
+#    Git branch or tag (e.g., 'develop' for Dev, 'release/*' for QA, 'v*' tag for Prod).
+# 4. It uses the 'HelmDeploy@0' task to install or upgrade the application.
+# 5. It dynamically constructs the 'overrideValues' for Helm by combining standard
+#    values (like the image tag) with a block of environment-specific values
+#    provided by the calling application pipeline.
+#
+# Parameters:
+#   - serviceName: The name of the microservice (e.g., 'order-service').
+#   - acrName: The name of your Azure Container Registry.
+#   - chartPath: The path to the common Helm chart within the 'cicd-platform' repo.
+#   - agentPoolName: The name of the self-hosted agent pool to use.
+#   - dev/qa/prod-AKSConnection: Service connection names for each AKS cluster.
+#   - dev/qa/prod-OverrideValues: YAML strings containing environment-specific
+#     configurations for the Helm chart.
+#
 
-# Version of the chart itself. You can bump this when you make changes to the chart.
-version: 0.1.0
+parameters:
+  # --- Application & Infrastructure Info ---
+  - name: serviceName
+    type: string
+  - name: acrName
+    type: string
+  - name: agentPoolName
+    type: string
 
-# Version of the application this chart deploys. Can be a placeholder.
-appVersion: "1.0.0"
+  # --- Helm Chart Path (within the templates repo) ---
+  - name: chartPath
+    type: string # e.g., 'charts/common-app'
+    
+  # --- Service Connections for each environment's AKS cluster ---
+  - name: devAKSConnection
+    type: string
+  - name: qaAKSConnection
+    type: string
+  - name: prodAKSConnection
+    type: string
+    
+  # --- Environment-specific override values (as multi-line YAML strings) ---
+  - name: devOverrideValues
+    type: string
+    default: ''
+  - name: qaOverrideValues
+    type: string
+    default: ''
+  - name: prodOverrideValues
+    type: string
+    default: ''
 
+stages:
+# ============================== DEPLOY TO DEV ==============================
+- stage: Deploy_Dev
+  displayName: 'Deploy to Dev Environment'
+  dependsOn: Build # Assumes a preceding stage named 'Build'
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+  variables:
+    # Fetches the image tag calculated in the 'Build' stage
+    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
+  jobs:
+  - deployment: DeployToDevAKS
+    displayName: 'Deploy Helm Chart to DEV AKS'
+    environment: 'DEV Environment' # Links to the ADO Environment for history/tracking
+    pool: { name: ${{ parameters.agentPoolName }} }
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: HelmDeploy@0
+            displayName: 'Execute Helm Upgrade for Dev'
+            inputs:
+              connectionType: 'AzureResourceGroup'
+              azureSubscription: ${{ parameters.devAKSConnection }}
+              namespace: '${{ parameters.serviceName }}-dev'
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
+              releaseName: ${{ parameters.serviceName }}
+              install: true
+              overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.devOverrideValues }}
 
+# ============================== DEPLOY TO QA ===============================
+- stage: Deploy_QA
+  displayName: 'Deploy to QA Environment'
+  dependsOn: Build
+  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
+  variables:
+    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
+  jobs:
+  - deployment: DeployToQAAKS
+    displayName: 'Deploy Helm Chart to QA AKS'
+    environment: 'QA Environment' # This environment should have a manual approval check
+    pool: { name: ${{ parameters.agentPoolName }} }
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: HelmDeploy@0
+            displayName: 'Execute Helm Upgrade for QA'
+            inputs:
+              connectionType: 'AzureResourceGroup'
+              azureSubscription: ${{ parameters.qaAKSConnection }}
+              namespace: '${{ parameters.serviceName }}-qa'
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
+              releaseName: ${{ parameters.serviceName }}
+              install: true
+              overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.qaOverrideValues }}
 
-
-# Default values for the common-app chart.
-# These will be overridden by the Azure Pipeline for each specific service.
-
-# -- Deployment Configuration --
-replicaCount: 1
-
-image:
-  repository: placeholder/image # This will be overridden by the pipeline
-  pullPolicy: IfNotPresent
-  tag: "latest" # This will also be overridden by the pipeline
-
-# -- Service Configuration --
-service:
-  type: ClusterIP
-  port: 8080 # The port your application container listens on
-
-# -- Ingress/Routing Configuration --
-# For NGINX VirtualServer resources
-virtualServer:
-  enabled: true
-  host: "placeholder.example.com" # Overridden by pipeline per environment
-
-# -- Secret Management Configuration --
-# For the CSI Secret Store Driver
-secretProvider:
-  enabled: true
-  provider: "azure" # The CSI driver you use (e.g., 'azure', 'vault')
-  parameters:
-    keyvaultName: "placeholder-kv" # Overridden by pipeline per environment
-    tenantId: "placeholder-tenant-id" # Your Azure Tenant ID
-
-    # This is the key to flexibility: a list of secrets to be fetched.
-    # The application's pipeline will provide the actual list.
-    secrets: []
-    # Example of how it will be used in the pipeline:
-    # secrets:
-    # - name: DATABASE-URL       # Name of the secret in Key Vault
-    #   alias: DB_URL           # Optional alias for the ENV var name
-    # - name: API-KEY
-
-# -- Additional Configuration --
-# A place for any non-secret environment variables
-extraEnvs: {}
-#  Example:
-#  extraEnvs:
-#    LOGGING_LEVEL: "INFO"
-#    SPRING_PROFILES_ACTIVE: "dev"
-
-
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ .Release.Name }}
-spec:
-  replicas: {{ .Values.replicaCount }}
-  selector:
-    matchLabels:
-      app: {{ .Release.Name }}
-  template:
-    metadata:
-      labels:
-        app: {{ .Release.Name }}
-    spec:
-      containers:
-        - name: {{ .Release.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports:
-            - name: http
-              containerPort: {{ .Values.service.port }}
-              protocol: TCP
-          # Inject non-secret environment variables
-          env:
-          {{- range $key, $val := .Values.extraEnvs }}
-            - name: {{ $key }}
-              value: {{ $val | quote }}
-          {{- end }}
-          # Inject all secrets from the CSI-created Kubernetes secret
-          {{- if and .Values.secretProvider.enabled .Values.secretProvider.parameters.secrets }}
-          envFrom:
-            - secretRef:
-                name: {{ .Release.Name }}-secrets
-          {{- end }}
-          # Mount the secrets as files (optional but good practice)
-          {{- if and .Values.secretProvider.enabled .Values.secretProvider.parameters.secrets }}
-          volumeMounts:
-            - name: secrets-store-volume
-              mountPath: "/mnt/secrets-store"
-              readOnly: true
-          {{- end }}
-      # Define the volume that uses the CSI driver
-      {{- if and .Values.secretProvider.enabled .Values.secretProvider.parameters.secrets }}
-      volumes:
-        - name: secrets-store-volume
-          csi:
-            driver: secrets-store.csi.k8s.io
-            readOnly: true
-            volumeAttributes:
-              secretProviderClass: {{ .Release.Name }}-spc
-      {{- end }}
-
-
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ .Release.Name }}
-spec:
-  type: {{ .Values.service.type }}
-  ports:
-    - port: {{ .Values.service.port }}
-      targetPort: http
-      protocol: TCP
-      name: http
-  selector:
-    app: {{ .Release.Name }}
-
-
-{{- if and .Values.secretProvider.enabled .Values.secretProvider.parameters.secrets }}
-apiVersion: secrets-store.csi.x-k8s.io/v1
-kind: SecretProviderClass
-metadata:
-  name: {{ .Release.Name }}-spc
-spec:
-  provider: {{ .Values.secretProvider.provider }}
-  # This section tells the CSI driver to create a native Kubernetes secret
-  # which our Deployment's 'envFrom' can then use.
-  secretObjects:
-  - secretName: {{ .Release.Name }}-secrets
-    type: Opaque
-    data:
-    {{- range .Values.secretProvider.parameters.secrets }}
-    - objectName: {{ .name }}
-      # The key in the k8s secret will be the alias if provided, otherwise the original name.
-      # This becomes the environment variable name in the container.
-      key: {{ .alias | default .name }}
-    {{- end }}
-  parameters:
-    keyvaultName: {{ .Values.secretProvider.parameters.keyvaultName | quote }}
-    tenantId: {{ .Values.secretProvider.parameters.tenantId | quote }}
-    # This section tells the driver which objects to fetch from Key Vault
-    objects: |
-      array:
-        {{- range .Values.secretProvider.parameters.secrets }}
-        - |
-          objectName: {{ .name }}
-          objectType: secret
-        {{- end }}
-{{- end }}
-
-
-# From the root of your cicd-platform repo
-git add charts/
-git commit -m "feat: create common-app Helm chart for microservices"
-git push
-
-{{- if .Values.virtualServerRoute.enabled }}
-apiVersion: k8s.nginx.org/v1
-kind: VirtualServerRoute
-metadata:
-  name: {{ .Release.Name }}-vsr
-spec:
-  # This section points to the master VirtualServer
-  host: {{ .Values.virtualServerRoute.parentVirtualServerName }}.{{ .Values.virtualServerRoute.parentVirtualServerNamespace }}.svc.cluster.local
-  subroutes:
-  - path: {{ .Values.virtualServerRoute.path }}
-    action:
-      # This tells NGINX to pass the traffic to our microservice's Service
-      pass: {{ .Release.Name }}
-{{- end }}
-
-virtualServerRoute:
-  enabled: true
-  # The namespace where the master VirtualServer lives (e.g., nginx-ingress)
-  parentVirtualServerNamespace: "nginx-ingress"
-  # The name of the master VirtualServer to attach to
-  parentVirtualServerName: "my-company-dev-vs"
-  # The path for this specific microservice
-  path: "/my-app" # This should be overridden by the pipeline
+# ============================= DEPLOY TO PROD ==============================
+- stage: Deploy_Prod
+  displayName: 'Deploy to Prod Environment'
+  dependsOn: Build
+  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
+  variables:
+    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
+  jobs:
+  - deployment: DeployToProdAKS
+    displayName: 'Deploy Helm Chart to PROD AKS'
+    environment: 'PROD Environment' # This environment MUST have a strict manual approval check
+    pool: { name: ${{ parameters.agentPoolName }} }
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: HelmDeploy@0
+            displayName: 'Execute Helm Upgrade for Prod'
+            inputs:
+              connectionType: 'AzureResourceGroup'
+              azureSubscription: ${{ parameters.prodAKSConnection }}
+              namespace: '${{ parameters.serviceName }}-prod'
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
+              releaseName: ${{ parameters.serviceName }}
+              install: true
+              overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.prodOverrideValues }}
