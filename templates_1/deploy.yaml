@@ -1,0 +1,214 @@
+# ===================================================================================
+# ==           README: UNIVERSAL MULTI-STAGE DEPLOYMENT TEMPLATE                 ==
+# ===================================================================================
+#
+# PURPOSE:
+# This template orchestrates the deployment of a microservice to all environments:
+# DEV (single-region), QA (dual-region), and PROD (dual-region). It is designed to
+# be called by an application's main pipeline after a successful build.
+#
+# KEY FEATURES & RESPONSIBILITIES:
+# 1.  **Multi-Stage Logic:** Contains separate stages for `Deploy_Dev`, `Deploy_QA`,
+#     and `Deploy_Prod`, each triggered by the correct Git branch or tag.
+#
+# 2.  **Multi-Region Deployments:** The QA and Prod stages have parallel jobs to deploy
+#     to two regions (e.g., East US and West US) simultaneously.
+#
+# 3.  **Segregated Agent Pools:** Each deployment job uses a specific agent pool name
+#     passed in as a parameter. This enforces a secure model where deploy agents only
+#     have access to their designated cluster (e.g., 'MB_Hub_Prod_EAST').
+#
+# 4.  **Kubernetes Service Connection:** It uses the standard and secure 'Kubernetes
+#     Service Connection' type to authenticate with AKS clusters.
+#
+# 5.  **Application-Defined Namespace:** The Kubernetes namespace is NOT a parameter.
+#     It MUST be defined within the `...OverrideValues` block provided by the
+#     calling application pipeline, making the app's config the single source of truth.
+#
+# 6.  **Flexible Configuration:** It accepts large YAML "override blocks" as parameters.
+#     This allows each application pipeline to define its unique runtime configuration
+#     (replicas, routes, secrets, etc.) for each environment.
+#
+# ===================================================================================
+
+parameters:
+  # --- Application & Infrastructure Info ---
+  - name: serviceName
+    type: string
+  - name: acrName
+    type: string
+  - name: chartPath
+    type: string
+
+  # --- Agent Pools for each Deployment Target ---
+  - name: devAgentPoolName
+    type: string
+  - name: qaRegion1AgentPoolName
+    type: string
+  - name: qaRegion2AgentPoolName
+    type: string
+  - name: prodRegion1AgentPoolName
+    type: string
+  - name: prodRegion2AgentPoolName
+    type: string
+    
+  # --- Kubernetes Service Connections for each AKS cluster ---
+  - name: devKubeServiceConnection
+    type: string
+  - name: qaRegion1KubeServiceConnection
+    type: string
+  - name: qaRegion2KubeServiceConnection
+    type: string
+  - name: prodRegion1KubeServiceConnection
+    type: string
+  - name: prodRegion2KubeServiceConnection
+    type: string
+    
+  # --- Environment-specific configuration blocks ---
+  - name: devOverrideValues
+    type: string
+    default: ''
+  - name: qaOverrideValues
+    type: string
+    default: ''
+  - name: prodOverrideValues
+    type: string
+    default: ''
+
+stages:
+# ============================== DEPLOY TO DEV (Single Region) ==============================
+- stage: Deploy_Dev
+  displayName: 'Deploy to Dev Environment'
+  dependsOn: Build
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/develop'))
+  variables:
+    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
+  jobs:
+  - deployment: DeployToDevAKS
+    environment: 'DEV Environment'
+    pool:
+      name: ${{ parameters.devAgentPoolName }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: HelmDeploy@0
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceConnection: ${{ parameters.devKubeServiceConnection }}
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
+              releaseName: '${{ parameters.serviceName }}'
+              install: true
+              createNamespace: true
+              overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.devOverrideValues }}
+
+# ============================== DEPLOY TO QA (Dual Region) ===============================
+- stage: Deploy_QA
+  displayName: 'Deploy to QA Environments (Dual Region)'
+  dependsOn: Build
+  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
+  variables:
+    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
+  jobs:
+  - deployment: DeployToQARegion1
+    environment: 'QA Environment - Region 1'
+    pool:
+      name: ${{ parameters.qaRegion1AgentPoolName }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: HelmDeploy@0
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceConnection: ${{ parameters.qaRegion1KubeServiceConnection }}
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
+              releaseName: '${{ parameters.serviceName }}'
+              install: true
+              createNamespace: true
+              overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.qaOverrideValues }}
+  - deployment: DeployToQARegion2
+    environment: 'QA Environment - Region 2'
+    pool:
+      name: ${{ parameters.qaRegion2AgentPoolName }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: HelmDeploy@0
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceConnection: ${{ parameters.qaRegion2KubeServiceConnection }}
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
+              releaseName: '${{ parameters.serviceName }}'
+              install: true
+              createNamespace: true
+              overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.qaOverrideValues }}
+
+# ============================= DEPLOY TO PROD (Dual Region) ==============================
+- stage: Deploy_Prod
+  displayName: 'Deploy to Prod Environments (Dual Region)'
+  dependsOn: Build
+  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
+  variables:
+    imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
+  jobs:
+  - deployment: DeployToProdRegion1
+    environment: 'PROD Environment - Region 1'
+    pool:
+      name: ${{ parameters.prodRegion1AgentPoolName }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: HelmDeploy@0
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceConnection: ${{ parameters.prodRegion1KubeServiceConnection }}
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
+              releaseName: '${{ parameters.serviceName }}'
+              install: true
+              createNamespace: true
+              overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.prodOverrideValues }}
+  - deployment: DeployToProdRegion2
+    environment: 'PROD Environment - Region 2'
+    pool:
+      name: ${{ parameters.prodRegion2AgentPoolName }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: HelmDeploy@0
+            inputs:
+              connectionType: 'Kubernetes Service Connection'
+              kubernetesServiceConnection: ${{ parameters.prodRegion2KubeServiceConnection }}
+              command: 'upgrade'
+              chartType: 'FilePath'
+              chartPath: '$(Pipeline.Workspace)/templates/${{ parameters.chartPath }}'
+              releaseName: '${{ parameters.serviceName }}'
+              install: true
+              createNamespace: true
+              overrideValues: |
+                image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.serviceName }}
+                image.tag=$(imageTag)
+                ${{ parameters.prodOverrideValues }}

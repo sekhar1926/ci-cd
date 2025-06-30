@@ -1,0 +1,163 @@
+# ===================================================================================
+# ==           README: MICROSERVICE CI/CD PIPELINE (Main App File)               ==
+# ===================================================================================
+#
+# PURPOSE:
+# This file defines the complete CI/CD process for THIS specific microservice. It acts
+# as a "control panel" by defining service-specific configuration and then calling
+# the standardized templates from the central 'cicd-platform' repository.
+#
+# HOW TO CONFIGURE A NEW SERVICE:
+# 1.  **Copy this File:** Place this file into the root of the new microservice's
+#     Git repository.
+#
+# 2.  **Update Variables:** In the `variables` block below, change the `serviceName`
+#     and any other relevant values for the new service. The agent pool and service
+#     connection names should be correct for your project.
+#
+# 3.  **Define Configuration:** The most important step is to fill out the
+#     `devOverrideValues`, `qaOverrideValues`, and `prodOverrideValues` blocks.
+#     This is where you define the unique runtime configuration (namespace, replicas,
+#     routes, environment variables, and secrets) required by the new service.
+#
+# 4.  **Commit:** Once this file is committed, the CI/CD process is fully active
+#     for the new service.
+#
+# ===================================================================================
+
+# --- Triggers: Defines WHEN this pipeline runs ---
+trigger:
+  branches: { include: [main, develop, release/*] }
+  tags: { include: [v*.*.*] }
+pr:
+  branches: { include: [main, develop, release/*] }
+
+# --- Resources: Connects to the central CI/CD platform templates ---
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: YourProject/cicd-platform
+      ref: main # BEST PRACTICE: Pin to a specific tag like 'refs/tags/v1.0.0'
+
+# --- Variables: Defines the unique configuration for THIS microservice ---
+variables:
+  # --- Global Info for this Service ---
+  - name: serviceName
+    value: 'order-service'
+  - name: acrName
+    value: 'mycompanyacr'
+  - name: chartPath
+    value: 'charts/common-app'
+
+  # --- Agent Pool Names - Mapped to your segregated pool strategy ---
+  - name: devDeployAgentPoolName
+    value: 'MB_Hub'
+  - name: qaEastDeployAgentPoolName
+    value: 'MB_Hub_QA_EAST'
+  - name: qaWestDeployAgentPoolName
+    value: 'MB_Hub_QA_WEST'
+  - name: prodEastDeployAgentPoolName
+    value: 'MB_Hub_Prod_EAST'
+  - name: prodWestDeployAgentPoolName
+    value: 'MB_Hub_prod_WEST'
+    
+  # --- Service Connection Names ---
+  - name: acrConnection
+    value: 'acr-service-connection'
+  - name: devKubeServiceConnection
+    value: 'dev-kube-sc'
+  - name: qaRegion1KubeServiceConnection
+    value: 'qa-eastus-kube-sc'
+  - name: qaRegion2KubeServiceConnection
+    value: 'qa-westus-kube-sc'
+  - name: prodRegion1KubeServiceConnection
+    value: 'prod-eastus-kube-sc'
+  - name: prodRegion2KubeServiceConnection
+    value: 'prod-westus-kube-sc'
+
+# --- Stages: The sequence of operations, executed by calling templates ---
+stages:
+# STAGE 1: Build the application
+- template: pipelines/build/kotlin-docker-build.yml@templates
+  parameters:
+    serviceName: $(serviceName)
+    acrName: $(acrName)
+    acrConnection: $(acrConnection)
+
+# STAGE 2: Deploy the application
+- template: pipelines/deploy/aks-helm-deploy.yml@templates
+  parameters:
+    # --- Pass standard parameters ---
+    serviceName: $(serviceName)
+    acrName: $(acrName)
+    chartPath: $(chartPath)
+    
+    # --- Pass agent pool parameters ---
+    devAgentPoolName: $(devDeployAgentPoolName)
+    qaRegion1AgentPoolName: $(qaEastDeployAgentPoolName)
+    qaRegion2AgentPoolName: $(qaWestDeployAgentPoolName)
+    prodRegion1AgentPoolName: $(prodEastDeployAgentPoolName)
+    prodRegion2AgentPoolName: $(prodWestDeployAgentPoolName)
+    
+    # --- Pass all regional Kubernetes service connections ---
+    devKubeServiceConnection: $(devKubeServiceConnection)
+    qaRegion1KubeServiceConnection: $(qaRegion1KubeServiceConnection)
+    qaRegion2KubeServiceConnection: $(qaRegion2KubeServiceConnection)
+    prodRegion1KubeServiceConnection: $(prodRegion1KubeServiceConnection)
+    prodRegion2KubeServiceConnection: $(prodRegion2KubeServiceConnection)
+    
+    # ==============================================================================
+    # ==               ENVIRONMENT-SPECIFIC CONFIGURATION PAYLOAD                 ==
+    # ==============================================================================
+
+    # --- CONFIGURATION FOR THE DEV ENVIRONMENT ---
+    devOverrideValues: |
+      namespace: order-service
+      replicaCount: 1
+      virtualServerRoute:
+        path: "/orders"
+        parentVirtualServerName: "my-company-dev-vs"
+      extraEnvs:
+        SPRING_PROFILES_ACTIVE: "dev"
+      secretProvider:
+        parameters:
+          keyvaultName: "order-service-dev-kv"
+          tenantId: "YOUR_AZURE_TENANT_ID"
+          secrets:
+          - name: order-db-connection-string
+            alias: DB_CONNECTION_STRING
+
+    # --- CONFIGURATION FOR THE QA ENVIRONMENT ---
+    qaOverrideValues: |
+      namespace: order-service
+      replicaCount: 2
+      virtualServerRoute:
+        path: "/orders"
+        parentVirtualServerName: "my-company-qa-vs"
+      extraEnvs:
+        SPRING_PROFILES_ACTIVE: "qa"
+      secretProvider:
+        parameters:
+          keyvaultName: "order-service-qa-kv"
+          tenantId: "YOUR_AZURE_TENANT_ID"
+          secrets:
+          - name: qa-order-db-connection-string
+            alias: DB_CONNECTION_STRING
+
+    # --- CONFIGURATION FOR THE PROD ENVIRONMENT ---
+    prodOverrideValues: |
+      namespace: order-service
+      replicaCount: 5
+      virtualServerRoute:
+        path: "/orders"
+        parentVirtualServerName: "my-company-prod-vs"
+      extraEnvs:
+        SPRING_PROFILES_ACTIVE: "prod"
+      secretProvider:
+        parameters:
+          keyvaultName: "order-service-prod-kv"
+          tenantId: "YOUR_AZURE_TENANT_ID"
+          secrets:
+          - name: prod-order-db-connection-string
+            alias: DB_CONNECTION_STRING
