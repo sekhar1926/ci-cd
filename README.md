@@ -1,3 +1,4 @@
+```mermaid
 graph TD
     subgraph "Phase 1: Development"
         A[Developer creates 'feature/login' branch from 'develop'] --> B{Work on Feature};
@@ -20,6 +21,11 @@ graph TD
         L --> M["Build Stage: Runs 'Build' Template <br>(Builds Docker image, tags as 'dev-commit', pushes to ACR)"];
         M --> N["Deploy Stage: Runs 'Deploy_Dev' Job <br>(Deploys to DEV Cluster)"];
     end
+
+    %% --- THIS IS THE FIX ---
+    % The dotted line shows that after some time and successful dev deployments,
+    % a manual decision is made to start the release process.
+    N-.->|"When 'develop' branch is ready"|O
 
     subgraph "Phase 4: Release Preparation (Manual Decision)"
         O{Time for a new Release? <br>(Manual Decision by Release Manager)} -- Yes --> P["Run 'Management - Create Release' Pipeline"];
@@ -63,3 +69,4 @@ graph TD
     style P fill:#cce5ff,stroke:#333,stroke-width:2px
     style EE fill:#fff2cc,stroke:#333,stroke-width:2px
     style GG fill:#ccffcc,stroke:#333,stroke-width:4px
+```
