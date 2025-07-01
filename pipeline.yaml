@@ -100,94 +100,95 @@ stages:
     acrName: $(acrName)
     acrConnection: $(acrConnection)
 
-# STAGE 2: Deploy the application. The jobs inside will only run for non-PR builds.
+# STAGE 2: Deploy the application. This stage is skipped for PRs.
 - stage: Deploy
   displayName: 'Deploy Application to Environments'
   dependsOn: Build
-  # This stage is completely skipped for PRs.
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
   jobs:
 
   # --- DEV DEPLOYMENT JOB ---
-  - job: Deploy_Dev
+  - deployment: Deploy_Dev
     displayName: 'Deploy to Dev'
     condition: eq(variables['Build.SourceBranch'], 'refs/heads/develop')
+    environment: 'DEV Environment' # Links to an environment, but typically without approvals
     pool:
       name: $(devDeployAgentPoolName)
     variables:
       imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
-    steps:
-    - template: pipelines/deploy/aks-helm-deploy.yml@templates
-      parameters:
-        serviceName: $(serviceName)
-        acrName: $(acrName)
-        chartPath: $(chartPath)
-        agentPoolName: $(devDeployAgentPoolName)
-        kubeServiceConnection: $(devKubeServiceConnection)
-        environmentName: 'DEV Environment'
-        # Pass the path to the dev values file
-        valuesFile: $(devValuesFile)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          # The template is now called inside the deployment job's steps
+          - template: pipelines/deploy/aks-helm-deploy.yml@templates
+            parameters:
+              serviceName: $(serviceName)
+              acrName: $(acrName)
+              chartPath: $(chartPath)
+              kubeServiceConnection: $(devKubeServiceConnection)
+              valuesFile: $(devValuesFile)
 
   # --- QA DEPLOYMENT JOBS ---
-  - job: Deploy_QA_East
+  - deployment: Deploy_QA_East
     displayName: 'Deploy to QA East US'
     condition: startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')
+    environment: 'QA Environment - Region 1' # THIS IS THE APPROVAL HOOK
     pool: { name: $(qaEastDeployAgentPoolName) }
     variables: { imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ] }
-    steps:
+    strategy: { runOnce: { deploy: { steps:
     - template: pipelines/deploy/aks-helm-deploy.yml@templates
       parameters:
         serviceName: $(serviceName)
         acrName: $(acrName)
         chartPath: $(chartPath)
-        agentPoolName: $(qaEastDeployAgentPoolName)
         kubeServiceConnection: $(qaRegion1KubeServiceConnection)
-        environmentName: 'QA Environment - Region 1'
-        valuesFile: $(qaValuesFile) # Using a common QA values file
-  - job: Deploy_QA_West
+        valuesFile: $(qaValuesFile)
+    } } } } # Note: closing braces for strategy
+  - deployment: Deploy_QA_West
     displayName: 'Deploy to QA West US'
     condition: startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')
+    environment: 'QA Environment - Region 2' # THIS IS THE APPROVAL HOOK
     pool: { name: $(qaWestDeployAgentPoolName) }
     variables: { imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ] }
-    steps:
+    strategy: { runOnce: { deploy: { steps:
     - template: pipelines/deploy/aks-helm-deploy.yml@templates
       parameters:
         serviceName: $(serviceName)
         acrName: $(acrName)
         chartPath: $(chartPath)
-        agentPoolName: $(qaWestDeployAgentPoolName)
         kubeServiceConnection: $(qaRegion2KubeServiceConnection)
-        environmentName: 'QA Environment - Region 2'
-        valuesFile: $(qaValuesFile) # Using a common QA values file
+        valuesFile: $(qaValuesFile)
+    } } } }
 
   # --- PROD DEPLOYMENT JOBS ---
-  - job: Deploy_Prod_East
+  - deployment: Deploy_Prod_East
     displayName: 'Deploy to Prod East US'
     condition: startsWith(variables['Build.SourceBranch'], 'refs/tags/v')
+    environment: 'PROD Environment - Region 1' # THIS IS THE APPROVAL HOOK
     pool: { name: $(prodEastDeployAgentPoolName) }
     variables: { imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ] }
-    steps:
+    strategy: { runOnce: { deploy: { steps:
     - template: pipelines/deploy/aks-helm-deploy.yml@templates
       parameters:
         serviceName: $(serviceName)
         acrName: $(acrName)
         chartPath: $(chartPath)
-        agentPoolName: $(prodEastDeployAgentPoolName)
         kubeServiceConnection: $(prodRegion1KubeServiceConnection)
-        environmentName: 'PROD Environment - Region 1'
-        valuesFile: $(prodValuesFile) # Using a common Prod values file
-  - job: Deploy_Prod_West
+        valuesFile: $(prodValuesFile)
+    } } } }
+  - deployment: Deploy_Prod_West
     displayName: 'Deploy to Prod West US'
     condition: startsWith(variables['Build.SourceBranch'], 'refs/tags/v')
+    environment: 'PROD Environment - Region 2' # THIS IS THE APPROVAL HOOK
     pool: { name: $(prodWestDeployAgentPoolName) }
     variables: { imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ] }
-    steps:
+    strategy: { runOnce: { deploy: { steps:
     - template: pipelines/deploy/aks-helm-deploy.yml@templates
       parameters:
         serviceName: $(serviceName)
         acrName: $(acrName)
         chartPath: $(chartPath)
-        agentPoolName: $(prodWestDeployAgentPoolName)
         kubeServiceConnection: $(prodRegion2KubeServiceConnection)
-        environmentName: 'PROD Environment - Region 2'
-        valuesFile: $(prodValuesFile) # Using a common Prod values file
+        valuesFile: $(prodValuesFile)
+    } } } }
