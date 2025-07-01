@@ -22,9 +22,8 @@ graph TD
         M --> N["Deploy Stage: Runs 'Deploy_Dev' Job <br>(Deploys to DEV Cluster)"];
     end
 
-    %% --- THIS IS THE FIX ---
-    % The dotted line shows that after some time and successful dev deployments,
-    % a manual decision is made to start the release process.
+    %% This dotted line shows that after a period of successful development,
+    %% a manual decision is made to start the release process.
     N-.->|"When 'develop' branch is ready"|O
 
     subgraph "Phase 4: Release Preparation (Manual Decision)"
