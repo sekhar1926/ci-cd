@@ -1,0 +1,47 @@
+# ===================================================================================
+# ==                       README: Common App Chart Defaults                     ==
+# ===================================================================================
+#
+# This file defines the default values and the data structure for our common
+# application Helm chart. This chart is intentionally "dumb" - it contains no
+# complex logic. It simply renders the templates based on the values it receives.
+#
+# The actual configuration for each microservice will be provided by a dedicated
+# values file (e.g., 'dev.yaml', 'prod-eastus.yaml') during the pipeline run.
+# This file serves as documentation for what a developer needs to provide.
+#
+
+# --- Deployment Configuration ---
+replicaCount: 1
+namespace: default
+
+# --- Image Configuration ---
+image:
+  repository: placeholder/image
+  tag: "placeholder"
+
+# --- Service Configuration ---
+service:
+  port: 8080
+
+# --- Routing Configuration ---
+virtualServerRoute:
+  enabled: true
+  path: "/placeholder"
+  parentVirtualServerName: "placeholder-vs"
+  parentVirtualServerNamespace: "nginx-ingress"
+
+# --- Non-Secret Environment Variables ---
+extraEnvs: {}
+
+# --- Secret Management Configuration ---
+secretProvider:
+  enabled: true
+  parameters:
+    keyvaultName: "placeholder-kv"
+    tenantId: "placeholder-tenant-id"
+    userAssignedIdentityID: ""
+    secrets: []
+    # secrets:
+    # - name: secret-name-in-kv
+    #   alias: ENV_VAR_NAME_IN_APP
