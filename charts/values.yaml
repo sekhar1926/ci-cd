@@ -1,47 +1,57 @@
 # ===================================================================================
-# ==                       README: Common App Chart Defaults                     ==
+# ==            Configuration Values for DEV Environment                         ==
 # ===================================================================================
 #
-# This file defines the default values and the data structure for our common
-# application Helm chart. This chart is intentionally "dumb" - it contains no
-# complex logic. It simply renders the templates based on the values it receives.
-#
-# The actual configuration for each microservice will be provided by a dedicated
-# values file (e.g., 'dev.yaml', 'prod-eastus.yaml') during the pipeline run.
-# This file serves as documentation for what a developer needs to provide.
+# This file contains the complete configuration for the 'manubank-transactions-microservice'
+# when it is deployed to the DEV cluster. It is passed to Helm using the '--values'
+# flag, which correctly handles complex structures like the 'secrets' list.
+# This solves the "helm upgrade requires 2 arguments" error.
 #
 
-# --- Deployment Configuration ---
+# The Kubernetes namespace where this service will be deployed.
+namespace: smbcmanubank
+
+# Number of pods to run for this service in the dev environment.
 replicaCount: 1
-namespace: default
 
-# --- Image Configuration ---
-image:
-  repository: placeholder/image
-  tag: "placeholder"
-
-# --- Service Configuration ---
-service:
-  port: 8080
-
-# --- Routing Configuration ---
+# Routing settings for the NGINX Ingress Controller.
 virtualServerRoute:
-  enabled: true
-  path: "/placeholder"
-  parentVirtualServerName: "placeholder-vs"
+  # The path that will route traffic to this service.
+  path: "/core/banking/transactions1"
+  # IMPORTANT: This should be the name of your central/master VirtualServer in the dev cluster.
+  # I have inferred this from your 'host' value. Please verify it is correct.
+  parentVirtualServerName: "apis-dev-east-vs"
+  # The namespace where the master VirtualServer is deployed.
   parentVirtualServerNamespace: "nginx-ingress"
 
-# --- Non-Secret Environment Variables ---
-extraEnvs: {}
+# Non-secret environment variables that will be injected into the container.
+extraEnvs:
+  ENVIRONMENT: "dev"
+  EAIAppNumber: "ManuBankMiddleware"
+  ORG_ID: "cf0e3fce-3e3f-45f8-94bb-a4936a7e9c74"
+  KEY_COLLECTION: "customer-encryption-database.customer-keys"
+  DEK_NAME: "wire-dek_secret"
 
-# --- Secret Management Configuration ---
+# Secret management configuration using the CSI Secret Store driver.
 secretProvider:
-  enabled: true
   parameters:
-    keyvaultName: "placeholder-kv"
-    tenantId: "placeholder-tenant-id"
-    userAssignedIdentityID: ""
-    secrets: []
-    # secrets:
-    # - name: secret-name-in-kv
-    #   alias: ENV_VAR_NAME_IN_APP
+    keyvaultName: "kv-wire-dev-dSb8-use"
+    tenantId: "c7f6413d-1e73-45d2-b0da-a68713b515a7"
+    # The managed identity used by the pod to access the Key Vault.
+    userAssignedIdentityID: "52271e03-bdfe-4415-9be1-330b3ab4d479"
+
+    # This is a list of all secrets to fetch from Azure Key Vault.
+    # Each item will be made available as an environment variable in the application.
+    secrets:
+    - name: fis-authorization-user-secret
+      alias: FIS_AUTHORIZATION_USER_SECRET
+    - name: fis-client-secret
+      alias: FIS_CLIENT_SECRET
+    - name: vault-encryption-principal-tenant-id
+      alias: VAULT_ENCRYPTION_PRINCIPAL_TENANT_ID
+    - name: vault-encryption-principal-client-id
+      alias: VAULT_ENCRYPTION_PRINCIPAL_CLIENT_ID
+    - name: vault-encryption-principal-client-secret
+      alias: VAULT_ENCRYPTION_PRINCIPAL_CLIENT_SECRET
+    - name: transactions-mongodb-uri
+      alias: MONGODB_URI
