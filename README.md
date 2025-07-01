@@ -27,8 +27,13 @@ graph TD
     N-.->|"When 'develop' branch is ready"|O
 
     subgraph "Phase 4: Release Preparation (Manual Decision)"
-        O{Time for a new Release? <br>(Manual Decision by Release Manager)} -- Yes --> P["Run 'Management - Create Release' Pipeline"];
-        P --> Q["Pipeline automatically: <br>1. Checks out 'develop' <br>2. Calculates next version (e.g., 1.3.0) <br>3. Creates 'release/1.3.0' branch"];
+        %% CORRECTED NODE O
+        O{"Time for a new Release?
+        (Manual Decision by Release Manager)"} -- Yes --> P["Run 'Management - Create Release' Pipeline"];
+        P --> Q["Pipeline automatically:
+        1. Checks out 'develop'
+        2. Calculates next version (e.g., 1.3.0)
+        3. Creates 'release/1.3.0' branch"];
     end
 
     subgraph "Phase 5: QA Deployment & Testing"
@@ -45,7 +50,10 @@ graph TD
 
     subgraph "Phase 6: Production Release (Final Approval)"
         Y --> Z["Run 'Management - Finalize Release' Pipeline"];
-        Z --> AA["Pipeline automatically: <br>1. Merges 'release/1.3.0' to 'main' <br>2. Creates 'v1.3.0' tag on 'main' <br>3. Merges 'release/1.3.0' to 'develop'"];
+        Z --> AA["Pipeline automatically:
+        1. Merges 'release/1.3.0' to 'main'
+        2. Creates 'v1.3.0' tag on 'main'
+        3. Merges 'release/1.3.0' to 'develop'"];
         AA --> BB["'v1.3.0' tag push triggers Application Pipeline"];
         BB --> CC["Build Stage: Runs 'Build' Template <br>(Builds final image, tags as '1.3.0', pushes to ACR)"];
         CC --> DD["Deploy Stage: 'Deploy_Prod' Jobs are triggered"];
