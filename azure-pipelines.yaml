@@ -1,0 +1,64 @@
+# ===================================================================================
+# ==            README: CICD Platform Self-Versioning Pipeline                   ==
+# ===================================================================================
+#
+# PURPOSE:
+# This pipeline automates the versioning of the cicd-platform itself.
+#
+# HOW IT WORKS:
+# It runs on pushes to the 'main' branch of this repo and uses 'semantic-release'
+# with Conventional Commits to automatically calculate, create, and push a new
+# version tag (e.g., v1.1.0).
+#
+# AGENT POOL:
+# This pipeline now runs on your dedicated 'MB_DevOps' agent pool, which is
+# assumed to have all necessary tools like Node.js and Helm pre-installed.
+#
+# ===================================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - pipelines/*
+      - charts/*
+
+pool:
+  name: 'MB_DevOps' # Using your dedicated build agent pool
+
+steps:
+- checkout: self
+  persistCredentials: true
+
+# We assume Node.js is pre-installed on the MB_DevOps agents.
+# If not, uncomment the following task.
+# - task: NodeTool@0
+#   inputs: { versionSpec: '18.x' }
+#   displayName: 'Use Node.js 18.x'
+
+- task: Bash@3
+  displayName: 'Install Semantic Release'
+  inputs:
+    targetType: 'inline'
+    # We only need to install the Node.js package. Helm is already present.
+    script: 'npm install -g semantic-release @semantic-release/git @semantic-release/commit-analyzer @semantic-release/release-notes-generator'
+  
+- task: Bash@3
+  displayName: 'Lint Helm Chart'
+  inputs:
+    # We can directly use the 'helm' command as it's pre-installed.
+    script: 'helm lint ./charts/common-app'
+
+- task: Bash@3
+  displayName: 'Calculate Version and Create Git Tag'
+  env:
+    GIT_TOKEN: $(System.AccessToken)
+  inputs:
+    targetType: 'inline'
+    script: |
+      git config --global user.email "pipeline@azuredevops.com"
+      git config --global user.name "Azure DevOps Pipeline"
+      
+      npx semantic-release -r https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/$(System.TeamFoundationCollectionUri.Split('@')[1])$(System.TeamProject)/_git/$(Build.Repository.Name)
