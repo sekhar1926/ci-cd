@@ -1,104 +1,47 @@
-# ===================================================================================
-# ==           README: Create Single Service Release Pipeline (Self-Contained)   ==
-# ===================================================================================
-#
-# PURPOSE:
-# This is a self-contained pipeline for starting a new release for a SINGLE
-# microservice. It is designed for simplicity and user-friendliness.
-#
-# HOW IT WORKS:
-# 1.  **Manual Trigger:** A Release Manager runs this pipeline from the ADO UI.
-# 2.  **Service Dropdown:** The user is presented with a dropdown list of microservices.
-#     This list is maintained DIRECTLY in the 'parameters' section of this file.
-# 3.  **Cross-Project Checkout:** It automatically checks out the 'develop' branch of
-#     the selected microservice, even if it's in a different ADO project.
-# 4.  **Automated Release Creation:** The pipeline automates version calculation and
-#     release branch creation for the selected service.
-#
-# CRITICAL SETUP:
-# For this cross-project checkout to work, you MUST disable a security setting:
-# 1.  Go to the Project Settings of THIS project (where this pipeline lives).
-# 2.  Under "Pipelines", click on "Settings".
-# 3.  TURN OFF the toggle for "Limit job authorization scope to current project..."
-# 4.  You must also grant this pipeline's build service ("CICD-Platform Build Service")
-#     "Contribute" permissions on the target microservice repositories.
-#
-# ===================================================================================
-
-trigger: none
-pr: none
-
-parameters:
-- name: microserviceProjectName
-  displayName: 'Microservice Project Name'
-  type: string
-  default: 'API Engineering'
-
-- name: repositoryName
-  displayName: 'Microservice to Release'
-  type: string
-  default: 'manubank-transactions-microservice'
-  values:
-    - order-service
-    - payment-service
-    - shipping-service
-    - inventory-service
-    - user-profile-service
-    - manubank-transactions-microservice
-
-# The resources block now dynamically defines the target repository.
-# The pipeline will automatically check out this repository.
-resources:
-  repositories:
-    - repository: MicroserviceRepo # A generic identifier
-      type: git
-      name: ${{ parameters.microserviceProjectName }}/${{ parameters.repositoryName }}
-      # Use the full ref name for the 'develop' branch for maximum reliability.
-      ref: refs/heads/develop
-
-pool:
-  name: 'MB_DevOps'
-
-jobs:
-- job: CreateReleaseForSingleService
-  displayName: 'Create Release for ${{ parameters.repositoryName }}'
-  
-  steps:
-  # The explicit 'checkout' step is no longer needed because the 'resources'
-  # block handles the checkout automatically.
-
-  - task: Bash@3
-    displayName: 'Install Tools'
-    inputs:
-      targetType: 'inline'
-      script: |
-        echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
-        npm install semantic-release @semantic-release/git jq-cli-wrapper
-  
+  # STEP 3: Calculate the next version using a dedicated script file.
   - task: Bash@3
     displayName: 'Calculate Next Version for ${{ parameters.repositoryName }}'
     name: CalculateVersion
-    # The 'resources' block checks out the code into a directory named after the repo identifier.
-    # So we must set the working directory to that path.
-    workingDirectory: '$(Pipeline.Workspace)/MicroserviceRepo'
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+    env:
+      GIT_TOKEN: $(System.AccessToken)
+      # Pass the repository name as an environment variable to the script
+      REPO_NAME: ${{ parameters.repositoryName }}
     script: |
+      # Write the logic to a shell script file. The 'EOF' ensures no variable expansion happens here.
+      cat <<'EOF' > run-semantic.sh
+      #!/bin/bash
+      set -e # Exit on error
+      
+      echo "--- Inside run-semantic.sh ---"
+      
+      # Run semantic-release and capture its output
       VERSION_JSON=$(npx semantic-release --dry-run -b main)
 
       if [ -z "$VERSION_JSON" ]; then
-        echo "No new changes for ${{ parameters.repositoryName }}. No release will be created."
+        echo "No new changes for $REPO_NAME. No release will be created."
         echo "##vso[task.setvariable variable=SkipCreation]true"
       else
+        # Use npx jq, which was installed locally
         NEXT_VERSION=$(echo "$VERSION_JSON" | npx jq -r '.nextRelease.version')
-        echo "Next version for ${{ parameters.repositoryName }} is: $NEXT_VERSION"
+        echo "Next version for $REPO_NAME is: $NEXT_VERSION"
         echo "##vso[task.setvariable variable=SkipCreation]false"
         echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
       fi
+      EOF
 
+      # Make the script executable
+      chmod +x run-semantic.sh
+      
+      # Execute the script
+      ./run-semantic.sh
+  # =======================================================================
+
+  # STEP 4: Create and push the release branch.
   - task: Bash@3
     displayName: 'Create Release Branch for ${{ parameters.repositoryName }}'
     condition: and(succeeded(), eq(variables['CalculateVersion.SkipCreation'], 'false'))
-    # This task must also run from the correct working directory.
-    workingDirectory: '$(Pipeline.Workspace)/MicroserviceRepo'
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
     env:
       GIT_TOKEN: $(System.AccessToken)
     script: |
@@ -107,8 +50,6 @@ jobs:
       git config --global user.name "Azure DevOps Pipeline"
       
       RELEASE_BRANCH="release/$(CalculateVersion.NextVersion)"
-      echo "Creating branch: $RELEASE_BRANCH from develop"
-      # The repo is already checked out, so we just need to create the branch locally.
       git checkout -b $RELEASE_BRANCH
 
       REPO_URL=$(git config --get remote.origin.url)
