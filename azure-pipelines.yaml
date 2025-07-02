@@ -62,3 +62,16 @@ steps:
       git config --global user.name "Azure DevOps Pipeline"
       
       npx semantic-release -r https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/$(System.TeamFoundationCollectionUri.Split('@')[1])$(System.TeamProject)/_git/$(Build.Repository.Name)
+
+
+- task: Bash@3
+  displayName: 'Install Semantic Release Locally'
+  inputs:
+    targetType: 'inline'
+    script: |
+      # Create a simple package.json to define our dependencies
+      echo '{ "name": "platform-release-tools", "version": "1.0.0" }' > package.json
+      
+      # Install the required packages locally. npm will create a node_modules folder.
+      # This command does not require sudo/root permissions.
+      npm install semantic-release @semantic-release/git @semantic-release/commit-analyzer @semantic-release/release-notes-generator
