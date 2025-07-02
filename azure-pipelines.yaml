@@ -1,107 +1,106 @@
+# This file is the single source of truth for all microservices managed by this platform.
+# Add the 'repositoryName' of new services here to make them appear in the release pipeline dropdown.
+
+services:
+  - repositoryName: order-service
+  - repositoryName: payment-service
+  - repositoryName: shipping-service
+  - repositoryName: inventory-service
+  - repositoryName: user-profile-service
+  - repositoryName: manubank-transactions-microservice
+  # ... add all your other 100+ service repository names here
+
+
 # ===================================================================================
-# ==               README: Create Release Branch Pipeline                        ==
+# ==           README: Create Single Service Release Pipeline                    ==
 # ===================================================================================
 #
 # PURPOSE:
-# This pipeline is designed to be run MANUALLY by a Release Manager to officially
-# start a new release for a specific microservice.
+# This is the standard pipeline for starting a new release for a SINGLE microservice.
+# It is designed to be user-friendly and is the recommended best practice for
+# one-at-a-time releases.
 #
 # HOW IT WORKS:
-# 1.  **Manual Trigger:** A user with the correct permissions navigates to this pipeline
-#     in the Azure DevOps UI and clicks "Run pipeline".
+# 1.  **Manual Trigger:** A Release Manager clicks "Run pipeline" in the ADO UI.
+# 2.  **Service Dropdown:** The user is presented with a dropdown list of all available
+#     microservices. This list is dynamically populated from 'service-manifest.yml'.
+# 3.  **Select & Run:** The user selects the service they want to release and clicks "Run".
+# 4.  **Automated Release Creation:** The pipeline then executes the standard release
+#     logic for that single service: calculates the version and creates the branch.
 #
-# 2.  **Provide Input:** The user must provide the name of the microservice repository
-#     they wish to create a release for (e.g., 'order-service').
-#
-# 3.  **Automated Versioning:** The pipeline checks out the 'develop' branch of the
-#     specified microservice. It then uses the 'semantic-release' tool to compare
-#     the 'develop' branch against the last release tag on the 'main' branch. Based
-#     on the Conventional Commits found, it automatically calculates the next
-#     semantic version number (e.g., 1.3.0).
-#
-# 4.  **Automated Branching:** It creates a new release branch with the calculated
-#     version number (e.g., 'release/1.3.0') from the current state of 'develop' and
-#     pushes it to the microservice's repository.
-#
-# DOWNSTREAM EFFECT:
-# The push of the new 'release/*' branch automatically triggers that microservice's
-# main CI/CD pipeline, which then builds a release candidate and deploys it to the
-# QA environment for testing.
-#
-# AGENT POOL:
-# This runs on the 'MB_DevOps' pool, which is assumed to have the necessary tools
-# like Node.js and Git pre-installed. 'semantic-release' is installed locally
-# to avoid permissions issues.
+# This provides a simple, foolproof way to initiate releases without needing to
+# remember or type repository names.
 #
 # ===================================================================================
 
-# This pipeline can only be run manually, it has no automatic triggers.
 trigger: none
 pr: none
 
+# This 'parameters' block is the key to the dynamic dropdown.
 parameters:
 - name: repositoryName
-  displayName: 'Microservice Repository to Release (e.g., order-service)'
+  displayName: 'Microservice to Release'
   type: string
+  default: 'order-service'
+  # This loop reads the 'service-manifest.yml' file and populates the dropdown choices.
+  values:
+  - ${{ each service in fromYAML(readFile('../service-manifest.yml')).services }}:
+    - ${{ service.repositoryName }}
 
 pool:
-  # Use the dedicated agent pool with the required tools and permissions.
   name: 'MB_DevOps'
 
-steps:
-# Step 1: Install required Node.js packages locally to avoid permissions issues.
-- task: Bash@3
-  displayName: 'Install Semantic Release Locally'
-  inputs:
-    targetType: 'inline'
-    script: |
-      echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
-      npm install semantic-release @semantic-release/git jq-cli-wrapper
-      # We install jq-cli-wrapper as a reliable way to get jq for JSON parsing.
-
-# Step 2: Check out the 'develop' branch of the specific application repository.
-- checkout: git://YourProject/${{ parameters.repositoryName }}@develop
-  persistCredentials: true # Allows the pipeline to push the new branch back.
-
-# Step 3: Use semantic-release to calculate the next version number.
-- task: Bash@3
-  displayName: 'Calculate Next Semantic Version'
-  name: CalculateVersion
-  # We must specify the working directory to ensure npm can find the local packages.
-  workingDirectory: '$(System.DefaultWorkingDirectory)'
-  script: |
-    # Run semantic-release in dry-run mode. It analyzes commits on 'develop'
-    # against the last tag on 'main' and outputs the result as JSON.
-    VERSION_JSON=$(npx semantic-release --dry-run -b main)
-
-    if [ -z "$VERSION_JSON" ]; then
-      echo "No new relevant commits found on 'develop' since the last release on 'main'."
-      echo "##vso[task.setvariable variable=NextVersion;isOutput=true]"
-    else
-      # Use the locally installed jq to safely parse the JSON output
-      NEXT_VERSION=$(echo "$VERSION_JSON" | npx jq -r '.nextRelease.version')
-      echo "Next version calculated: $NEXT_VERSION"
-      echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
-    fi
-
-# Step 4: Create and push the new release branch if a new version was calculated.
-- task: Bash@3
-  displayName: 'Create and Push Release Branch'
-  condition: and(succeeded(), not(eq(variables['CalculateVersion.NextVersion'], '')))
-  env:
-    GIT_TOKEN: $(System.AccessToken)
-  script: |
-    set -e # Exit script immediately if a command fails.
-    git config --global user.email "pipeline@azuredevops.com"
-    git config --global user.name "Azure DevOps Pipeline"
+# This pipeline now has a single, standard job instead of a complex matrix.
+jobs:
+- job: CreateReleaseForSingleService
+  displayName: 'Create Release for ${{ parameters.repositoryName }}'
+  
+  steps:
+  - task: Bash@3
+    displayName: 'Install Tools'
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
+        npm install semantic-release @semantic-release/git jq-cli-wrapper
     
-    RELEASE_BRANCH="release/$(CalculateVersion.NextVersion)"
-    echo "Creating branch: $RELEASE_BRANCH from develop"
-    git checkout -b $RELEASE_BRANCH
+  - checkout: git://YourProject/${{ parameters.repositoryName }}@develop
+    persistCredentials: true
 
-    # Construct the authenticated URL to push the new branch.
-    REPO_URL=$(git config --get remote.origin.url)
-    AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${REPO_URL#https://}"
-    git push $AUTH_REPO_URL $RELEASE_BRANCH
+  - task: Bash@3
+    displayName: 'Calculate Next Version for ${{ parameters.repositoryName }}'
+    name: CalculateVersion
+    workingDirectory: '$(System.DefaultWorkingDirectory)'
+    script: |
+      # This script is the same as before
+      VERSION_JSON=$(npx semantic-release --dry-run -b main)
 
-    echo "Successfully created and pushed $RELEASE_BRANCH for repository ${{ parameters.repositoryName }}"
+      if [ -z "$VERSION_JSON" ]; then
+        echo "No new changes for ${{ parameters.repositoryName }}. No release will be created."
+        echo "##vso[task.setvariable variable=SkipCreation]true"
+      else
+        NEXT_VERSION=$(echo "$VERSION_JSON" | npx jq -r '.nextRelease.version')
+        echo "Next version for ${{ parameters.repositoryName }} is: $NEXT_VERSION"
+        echo "##vso[task.setvariable variable=SkipCreation]false"
+        echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
+      fi
+
+  - task: Bash@3
+    displayName: 'Create Release Branch for ${{ parameters.repositoryName }}'
+    condition: and(succeeded(), eq(variables['CalculateVersion.SkipCreation'], 'false'))
+    env:
+      GIT_TOKEN: $(System.AccessToken)
+    script: |
+      set -e
+      git config --global user.email "pipeline@azuredevops.com"
+      git config --global user.name "Azure DevOps Pipeline"
+      
+      RELEASE_BRANCH="release/$(CalculateVersion.NextVersion)"
+      echo "Creating branch: $RELEASE_BRANCH from develop"
+      git checkout -b $RELEASE_BRANCH
+
+      REPO_URL=$(git config --get remote.origin.url)
+      AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${REPO_URL#https://}"
+      git push $AUTH_REPO_URL $RELEASE_BRANCH
+
+      echo "Successfully created and pushed $RELEASE_BRANCH for repository ${{ parameters.repositoryName }}"
