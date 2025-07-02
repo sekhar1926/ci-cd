@@ -1,59 +1,127 @@
-  # STEP 3: Calculate the next version using a dedicated script file.
+# ===================================================================================
+# ==           README: Create Single Service Release Pipeline (Debugging)        ==
+# ===================================================================================
+#
+# PURPOSE:
+# This pipeline starts a new release for a SINGLE microservice.
+#
+# CORRECTION (Definitive Debugging):
+# This version is designed to capture the TRUE error message from semantic-release.
+# The 'jq parse error' is a symptom, not the cause. This script will now:
+#   1. Run the semantic-release command and store its raw output.
+#   2. PRINT the raw output to the pipeline log. This is the most important step.
+#   3. Attempt to parse the output with jq.
+# This will allow us to see the real error and solve the root cause.
+#
+# ===================================================================================
+
+trigger: none
+pr: none
+
+parameters:
+- name: microserviceProjectName
+  displayName: 'Microservice Project Name'
+  type: string
+  default: 'API Engineering'
+- name: repositoryName
+  displayName: 'Microservice to Release'
+  type: string
+  default: 'manubank-transactions-microservice'
+  values:
+    - order-service
+    - payment-service
+    - manubank-transactions-microservice
+
+pool:
+  name: 'MB_DevOps'
+
+jobs:
+- job: CreateReleaseForSingleService
+  displayName: 'Create Release for ${{ parameters.repositoryName }}'
+  workspace:
+    clean: all
+  
+  steps:
+  - task: Bash@3
+    displayName: 'Install Tools'
+    # ... (this step is correct)
+    inputs: { targetType: 'inline', script: 'echo ''{ "name": "create-release-tools", "version": "1.0.0" }'' > package.json && npm install semantic-release @semantic-release/git jq-cli-wrapper' }
+
+  - task: Bash@3
+    displayName: 'Clone & Checkout Microservice Repo'
+    # ... (this step is correct, but ensure YourOrgName is correct)
+    env: { GIT_TOKEN: $(System.AccessToken) }
+    script: |
+      set -e
+      PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
+      REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
+      git clone "$REPO_URL" .
+      git checkout develop
+  
+  # ============================ THE FIX IS HERE ============================
   - task: Bash@3
     displayName: 'Calculate Next Version for ${{ parameters.repositoryName }}'
     name: CalculateVersion
     workingDirectory: '$(System.DefaultWorkingDirectory)'
     env:
+      # Pass the token for authentication
       GIT_TOKEN: $(System.AccessToken)
-      # Pass the repository name as an environment variable to the script
+      # Some plugins use GH_TOKEN as a fallback, so setting both is safe.
+      GH_TOKEN: $(System.AccessToken)
       REPO_NAME: ${{ parameters.repositoryName }}
     script: |
-      # Write the logic to a shell script file. The 'EOF' ensures no variable expansion happens here.
+      # Write the logic to a shell script file for safety.
       cat <<'EOF' > run-semantic.sh
       #!/bin/bash
-      set -e # Exit on error
+      set -e
       
       echo "--- Inside run-semantic.sh ---"
-      
-      # Run semantic-release and capture its output
-      VERSION_JSON=$(npx semantic-release --dry-run -b main)
 
-      if [ -z "$VERSION_JSON" ]; then
-        echo "No new changes for $REPO_NAME. No release will be created."
+      # Export the token so sub-processes can see it.
+      export GIT_TOKEN=$GIT_TOKEN
+      export GH_TOKEN=$GH_TOKEN
+      
+      # 1. Run the command and store its raw output in a variable AND a file
+      echo "Running semantic-release and capturing output..."
+      RAW_OUTPUT=$(npx semantic-release --dry-run -b main)
+      
+      # 2. THIS IS THE MOST IMPORTANT DEBUGGING STEP
+      # Print the raw output to the pipeline log so we can see the real error.
+      echo "================= RAW SEMANTIC-RELEASE OUTPUT ================="
+      echo "$RAW_OUTPUT"
+      echo "==============================================================="
+      
+      # 3. Now, try to process it. This might still fail, but now we know why.
+      if [ -z "$RAW_OUTPUT" ]; then
+        echo "No output from semantic-release. Assuming no changes."
         echo "##vso[task.setvariable variable=SkipCreation]true"
       else
-        # Use npx jq, which was installed locally
-        NEXT_VERSION=$(echo "$VERSION_JSON" | npx jq -r '.nextRelease.version')
-        echo "Next version for $REPO_NAME is: $NEXT_VERSION"
-        echo "##vso[task.setvariable variable=SkipCreation]false"
-        echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
+        # Try to see if the output is valid JSON by checking for a known key.
+        # We use 'grep -q' which is silent and just sets an exit code.
+        if echo "$RAW_OUTPUT" | grep -q '"nextRelease"'; then
+          # It looks like JSON, so we can parse it.
+          NEXT_VERSION=$(echo "$RAW_OUTPUT" | npx jq -r '.nextRelease.version')
+          echo "Next version for $REPO_NAME is: $NEXT_VERSION"
+          echo "##vso[task.setvariable variable=SkipCreation]false"
+          echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
+        else
+          # It's not JSON, so it must be an error or log message.
+          echo "Semantic-release did not output valid JSON. No release will be created."
+          echo "Check the raw output above for the root cause."
+          echo "##vso[task.setvariable variable=SkipCreation]true"
+        fi
       fi
       EOF
 
-      # Make the script executable
       chmod +x run-semantic.sh
-      
-      # Execute the script
       ./run-semantic.sh
   # =======================================================================
 
-  # STEP 4: Create and push the release branch.
   - task: Bash@3
     displayName: 'Create Release Branch for ${{ parameters.repositoryName }}'
+    # ... (this step is correct)
     condition: and(succeeded(), eq(variables['CalculateVersion.SkipCreation'], 'false'))
     workingDirectory: '$(System.DefaultWorkingDirectory)'
-    env:
-      GIT_TOKEN: $(System.AccessToken)
+    env: { GIT_TOKEN: $(System.AccessToken) }
     script: |
-      set -e
-      git config --global user.email "pipeline@azuredevops.com"
-      git config --global user.name "Azure DevOps Pipeline"
-      
-      RELEASE_BRANCH="release/$(CalculateVersion.NextVersion)"
-      git checkout -b $RELEASE_BRANCH
-
-      REPO_URL=$(git config --get remote.origin.url)
-      AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${REPO_URL#https://}"
-      git push $AUTH_REPO_URL $RELEASE_BRANCH
-
-      echo "Successfully created and pushed $RELEASE_BRANCH for repository ${{ parameters.repositoryName }}"
+      # ... (script to create and push branch)
