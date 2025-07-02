@@ -1,18 +1,33 @@
-# This file is the single source of truth for all microservices managed by this platform.
-# Add the 'repositoryName' of new services here to make them appear in the release pipeline dropdown.
+# ===================================================================================
+# ==                       README: Service Manifest File                         ==
+# ===================================================================================
+#
+# PURPOSE:
+# This file is the single source of truth for all microservices that can be
+# released through the CI/CD platform. It is a simple data file.
+#
+# HOW IT'S USED:
+# The 'Management - Create Service Release' pipeline reads this file to dynamically
+# generate the dropdown list of services a user can choose from when starting a release.
+#
+# HOW TO MAINTAIN:
+# When a new microservice is ready to be managed by the platform, simply add its
+# 'repositoryName' to the 'services' list below. This is a low-risk change that
+# does not modify any pipeline logic.
+#
+# ===================================================================================
 
 services:
+  - repositoryName: manubank-transactions-microservice
   - repositoryName: order-service
   - repositoryName: payment-service
   - repositoryName: shipping-service
   - repositoryName: inventory-service
   - repositoryName: user-profile-service
-  - repositoryName: manubank-transactions-microservice
-  # ... add all your other 100+ service repository names here
+  # ... continue adding all your other microservice repository names here
 
-
-# ===================================================================================
-# ==           README: Create Single Service Release Pipeline                    ==
+  # ===================================================================================
+# ==           README: Create Single Service Release Pipeline (Final)            ==
 # ===================================================================================
 #
 # PURPOSE:
@@ -21,58 +36,69 @@ services:
 # one-at-a-time releases.
 #
 # HOW IT WORKS:
-# 1.  **Manual Trigger:** A Release Manager clicks "Run pipeline" in the ADO UI.
+# 1.  **Manual Trigger:** A user runs this pipeline from the ADO UI.
 # 2.  **Service Dropdown:** The user is presented with a dropdown list of all available
-#     microservices. This list is dynamically populated from 'service-manifest.yml'.
-# 3.  **Select & Run:** The user selects the service they want to release and clicks "Run".
-# 4.  **Automated Release Creation:** The pipeline then executes the standard release
-#     logic for that single service: calculates the version and creates the branch.
+#     microservices. This list is dynamically populated by reading the
+#     'service-manifest.yml' file at the root of this repository.
+# 3.  **Automated Release Creation:** The pipeline automates version calculation (using
+#     semantic-release) and release branch creation for the selected service.
 #
-# This provides a simple, foolproof way to initiate releases without needing to
-# remember or type repository names.
+# AGENT POOL & TOOLS:
+# Runs on the 'MB_DevOps' pool. It assumes Node.js/npm and git are pre-installed.
+# It installs required Node packages locally to avoid agent permissions issues.
 #
 # ===================================================================================
 
 trigger: none
 pr: none
 
-# This 'parameters' block is the key to the dynamic dropdown.
+# We must declare the 'self' repository as a resource to be able to use the
+# 'readFile' function with the '@self' syntax.
+resources:
+  repositories:
+    - repository: self
+      type: git
+
+# This 'parameters' block uses the correct YAML expression to read the manifest
+# file and create a dynamic dropdown menu for the user.
 parameters:
 - name: repositoryName
   displayName: 'Microservice to Release'
   type: string
   default: 'order-service'
-  # This loop reads the 'service-manifest.yml' file and populates the dropdown choices.
   values:
-  - ${{ each service in fromYAML(readFile('../service-manifest.yml')).services }}:
+  # This syntax correctly tells the parser to read the file from the root
+  # of the 'self' repository resource and generate a list of choices.
+  ${{ each service in fromYAML(readFile('service-manifest.yml@self')).services }}:
     - ${{ service.repositoryName }}
 
 pool:
   name: 'MB_DevOps'
 
-# This pipeline now has a single, standard job instead of a complex matrix.
 jobs:
 - job: CreateReleaseForSingleService
   displayName: 'Create Release for ${{ parameters.repositoryName }}'
   
   steps:
+  # Step 1: Install required Node.js packages locally.
   - task: Bash@3
-    displayName: 'Install Tools'
+    displayName: 'Install Tools (semantic-release, jq)'
     inputs:
       targetType: 'inline'
       script: |
         echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
         npm install semantic-release @semantic-release/git jq-cli-wrapper
     
+  # Step 2: Check out the 'develop' branch of the selected microservice.
   - checkout: git://YourProject/${{ parameters.repositoryName }}@develop
     persistCredentials: true
 
+  # Step 3: Calculate the next version number.
   - task: Bash@3
     displayName: 'Calculate Next Version for ${{ parameters.repositoryName }}'
     name: CalculateVersion
     workingDirectory: '$(System.DefaultWorkingDirectory)'
     script: |
-      # This script is the same as before
       VERSION_JSON=$(npx semantic-release --dry-run -b main)
 
       if [ -z "$VERSION_JSON" ]; then
@@ -85,6 +111,7 @@ jobs:
         echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
       fi
 
+  # Step 4: Create and push the release branch if a new version was found.
   - task: Bash@3
     displayName: 'Create Release Branch for ${{ parameters.repositoryName }}'
     condition: and(succeeded(), eq(variables['CalculateVersion.SkipCreation'], 'false'))
