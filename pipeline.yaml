@@ -1,194 +1,134 @@
 # ===================================================================================
-# ==           README: MICROSERVICE CI/CD PIPELINE (Values File Model)             ==
+# ==         README: Create Release Pipeline (Centralized Config)                ==
 # ===================================================================================
 #
 # PURPOSE:
-# This file defines the complete CI/CD process for THIS specific microservice using
-# the "Values File per Environment" strategy. This is the recommended and most
-# robust architecture for managing configuration at scale.
+# This is the definitive pipeline for starting a new release for a single microservice.
+# It uses a centralized 'semantic-release' configuration, which is a best practice
+# for managing many services.
 #
 # HOW IT WORKS:
-# 1.  **Configuration in Files:** All environment-specific configuration (replicas,
-#     namespaces, secrets, etc.) now lives in dedicated YAML files within the
-#     `/helm-values` directory of this repository.
+# 1.  **Manual Trigger & Dropdown:** A user selects a microservice from a dropdown.
+# 2.  **Clone & Checkout:** It clones the target microservice repository.
+# 3.  **Copy Central Config:** It copies the standard '.releaserc.json' file from this
+#     platform repository into the checked-out microservice directory. This ensures
+#     every service uses the exact same release logic.
+# 4.  **Calculate Version & Write to File:** It runs 'semantic-release', which finds
+#     the config file and writes the new version to 'next-version.txt'.
+# 5.  **Create Release Branch:** It reads the version from the file and creates the
+#     release branch.
 #
-# 2.  **Pipeline as Orchestrator:** This pipeline's primary job is to orchestrate the
-#     process. It determines which environment to deploy to (based on the Git branch)
-#     and tells the deploy template which configuration file to use for that deployment.
-#
-# 3.  **Simple & Stable Templates:** It calls standardized, simple templates from the
-#     central 'cicd-platform' for the actual build and deploy logic. This separates
-#     the "what" (this file's configuration) from the "how" (the platform's logic).
-#
-# HOW TO CONFIGURE A NEW SERVICE:
-# 1.  Copy this file into the root of the new microservice's repository.
-# 2.  Create a `/helm-values` directory.
-# 3.  Inside `/helm-values`, create a YAML file for each deployment target (e.g.,
-#     `dev.yaml`, `qa-eastus.yaml`, `prod-westus.yaml`).
-# 4.  Update the `variables` block in this file to match the new service's name
-#     and point to the correct values files.
+# This workflow requires ZERO release-specific configuration in the microservice repos.
 #
 # ===================================================================================
 
-# --- Triggers: Defines WHEN this pipeline runs ---
-trigger:
-  branches: { include: [main, develop, release/*] }
-  tags: { include: [v*.*.*] }
-pr:
-  branches: { include: [main, develop, release/*] }
+trigger: none
+pr: none
 
-# --- Resources: Connects to the central CI/CD platform templates ---
-resources:
-  repositories:
-    - repository: templates
-      type: git
-      name: YourProject/cicd-platform
-      ref: main # BEST PRACTICE: Pin to a specific tag like 'refs/tags/v1.0.0'
+parameters:
+- name: microserviceProjectName
+  displayName: 'Microservice Project Name'
+  type: string
+  default: 'API Engineering'
+- name: repositoryName
+  displayName: 'Microservice to Release'
+  type: string
+  default: 'manubank-transactions-microservice'
+  values:
+    - order-service
+    - payment-service
+    - manubank-transactions-microservice
 
-# --- Variables: Defines the unique configuration for THIS microservice ---
-variables:
-  # --- Global Info for this Service ---
-  - name: serviceName
-    value: 'order-service'
-  - name: acrName
-    value: 'mycompanyacr'
-  - name: chartPath
-    value: 'charts/common-app'
+pool:
+  name: 'MB_DevOps'
 
-  # --- Agent Pool Names - Mapped to your segregated pool strategy ---
-  - name: buildAgentPoolName # This is for clarity, but the pool is hardcoded in the build template.
-    value: 'MB_DevOps'
-  - name: devDeployAgentPoolName
-    value: 'MB_Hub'
-  - name: qaEastDeployAgentPoolName
-    value: 'MB_Hub_QA_EAST'
-  - name: qaWestDeployAgentPoolName
-    value: 'MB_Hub_QA_WEST'
-  - name: prodEastDeployAgentPoolName
-    value: 'MB_Hub_Prod_EAST'
-  - name: prodWestDeployAgentPoolName
-    value: 'MB_Hub_prod_WEST'
-    
-  # --- Kubernetes Service Connection Names ---
-  - name: acrConnection
-    value: 'acr-service-connection'
-  - name: devKubeServiceConnection
-    value: 'dev-kube-sc'
-  - name: qaRegion1KubeServiceConnection
-    value: 'qa-eastus-kube-sc'
-  - name: qaRegion2KubeServiceConnection
-    value: 'qa-westus-kube-sc'
-  - name: prodRegion1KubeServiceConnection
-    value: 'prod-eastus-kube-sc'
-  - name: prodRegion2KubeServiceConnection
-    value: 'prod-westus-kube-sc'
+jobs:
+- job: CreateReleaseForSingleService
+  displayName: 'Create Release for ${{ parameters.repositoryName }}'
+  workspace:
+    clean: all
+  
+  steps:
+  # Step 1: Check out the platform repo first to get the config file.
+  - checkout: self
+    path: 'platform' # Check out into a 'platform' subdirectory
 
-  # --- Paths to Environment Configuration Files ---
-  - name: devValuesFile
-    value: 'helm-values/dev.yaml'
-  - name: qaValuesFile
-    value: 'helm-values/qa.yaml' # A file for values common to both QA regions
-  - name: prodValuesFile
-    value: 'helm-values/prod.yaml' # A file for values common to both Prod regions
+  # Step 2: Install tools.
+  - task: Bash@3
+    displayName: 'Install Tools'
+    inputs:
+      targetType: 'inline'
+      script: |
+        echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
+        npm install semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/exec
 
-# --- Stages: The sequence of operations, executed by calling templates ---
-stages:
-# STAGE 1: Build the application. This runs for PRs and regular builds.
-- template: pipelines/build/kotlin-docker-build.yml@templates
-  parameters:
-    serviceName: $(serviceName)
-    acrName: $(acrName)
-    acrConnection: $(acrConnection)
+  # Step 3: Manually clone the target microservice repo into a separate directory.
+  - task: Bash@3
+    displayName: 'Clone & Checkout Microservice Repo'
+    env:
+      GIT_TOKEN: $(System.AccessToken)
+    script: |
+      set -e
+      # IMPORTANT: Replace 'YourOrgName' with your actual organization name.
+      PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
+      REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
+      
+      echo "Cloning microservice repository into 'service-repo' directory..."
+      git clone "$REPO_URL" service-repo
+      
+      echo "Switching to 'develop' branch..."
+      cd service-repo
+      git checkout develop
+      cd ..
 
-# STAGE 2: Deploy the application. This stage is skipped for PRs.
-- stage: Deploy
-  displayName: 'Deploy Application to Environments'
-  dependsOn: Build
-  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
-  jobs:
+  # Step 4: Copy the central config file into the microservice directory.
+  - task: CopyFiles@2
+    displayName: 'Copy Central .releaserc.json'
+    inputs:
+      SourceFolder: '$(System.DefaultWorkingDirectory)/platform/config'
+      Contents: 'common.releaserc.json'
+      TargetFolder: '$(System.DefaultWorkingDirectory)/service-repo'
+      # Rename the file to what semantic-release expects by default.
+      OverWrite: true
+  - task: PowerShell@2
+    displayName: 'Rename config file'
+    inputs:
+      targetType: 'inline'
+      script: 'Rename-Item -Path "$(System.DefaultWorkingDirectory)/service-repo/common.releaserc.json" -NewName ".releaserc.json"'
 
-  # --- DEV DEPLOYMENT JOB ---
-  - deployment: Deploy_Dev
-    displayName: 'Deploy to Dev'
-    condition: eq(variables['Build.SourceBranch'], 'refs/heads/develop')
-    environment: 'DEV Environment' # Links to an environment, but typically without approvals
-    pool:
-      name: $(devDeployAgentPoolName)
-    variables:
-      imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          # The template is now called inside the deployment job's steps
-          - template: pipelines/deploy/aks-helm-deploy.yml@templates
-            parameters:
-              serviceName: $(serviceName)
-              acrName: $(acrName)
-              chartPath: $(chartPath)
-              kubeServiceConnection: $(devKubeServiceConnection)
-              valuesFile: $(devValuesFile)
+  # Step 5: Run semantic-release on the microservice repo.
+  - task: Bash@3
+    displayName: 'Calculate Next Version'
+    # Set the working directory to the microservice repo.
+    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+    env:
+      GIT_TOKEN: $(System.AccessToken)
+      GH_TOKEN: $(System.AccessToken)
+    script: |
+      npx semantic-release || true
+  
+  # Step 6: Read the version and create the release branch.
+  - task: Bash@3
+    displayName: 'Create and Push Release Branch'
+    # Set the working directory to the microservice repo.
+    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+    env:
+      GIT_TOKEN: $(System.AccessToken)
+    script: |
+      set -e
+      if [ -f "next-version.txt" ]; then
+        NEXT_VERSION=$(cat next-version.txt)
+        echo "Found new version: $NEXT_VERSION. Creating release branch."
 
-  # --- QA DEPLOYMENT JOBS ---
-  - deployment: Deploy_QA_East
-    displayName: 'Deploy to QA East US'
-    condition: startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')
-    environment: 'QA Environment - Region 1' # THIS IS THE APPROVAL HOOK
-    pool: { name: $(qaEastDeployAgentPoolName) }
-    variables: { imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ] }
-    strategy: { runOnce: { deploy: { steps:
-    - template: pipelines/deploy/aks-helm-deploy.yml@templates
-      parameters:
-        serviceName: $(serviceName)
-        acrName: $(acrName)
-        chartPath: $(chartPath)
-        kubeServiceConnection: $(qaRegion1KubeServiceConnection)
-        valuesFile: $(qaValuesFile)
-    } } } } # Note: closing braces for strategy
-  - deployment: Deploy_QA_West
-    displayName: 'Deploy to QA West US'
-    condition: startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')
-    environment: 'QA Environment - Region 2' # THIS IS THE APPROVAL HOOK
-    pool: { name: $(qaWestDeployAgentPoolName) }
-    variables: { imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ] }
-    strategy: { runOnce: { deploy: { steps:
-    - template: pipelines/deploy/aks-helm-deploy.yml@templates
-      parameters:
-        serviceName: $(serviceName)
-        acrName: $(acrName)
-        chartPath: $(chartPath)
-        kubeServiceConnection: $(qaRegion2KubeServiceConnection)
-        valuesFile: $(qaValuesFile)
-    } } } }
+        git config --global user.email "pipeline@azuredevops.com"
+        git config --global user.name "Azure DevOps Pipeline"
+        
+        RELEASE_BRANCH="release/$NEXT_VERSION"
+        git checkout -b $RELEASE_BRANCH
 
-  # --- PROD DEPLOYMENT JOBS ---
-  - deployment: Deploy_Prod_East
-    displayName: 'Deploy to Prod East US'
-    condition: startsWith(variables['Build.SourceBranch'], 'refs/tags/v')
-    environment: 'PROD Environment - Region 1' # THIS IS THE APPROVAL HOOK
-    pool: { name: $(prodEastDeployAgentPoolName) }
-    variables: { imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ] }
-    strategy: { runOnce: { deploy: { steps:
-    - template: pipelines/deploy/aks-helm-deploy.yml@templates
-      parameters:
-        serviceName: $(serviceName)
-        acrName: $(acrName)
-        chartPath: $(chartPath)
-        kubeServiceConnection: $(prodRegion1KubeServiceConnection)
-        valuesFile: $(prodValuesFile)
-    } } } }
-  - deployment: Deploy_Prod_West
-    displayName: 'Deploy to Prod West US'
-    condition: startsWith(variables['Build.SourceBranch'], 'refs/tags/v')
-    environment: 'PROD Environment - Region 2' # THIS IS THE APPROVAL HOOK
-    pool: { name: $(prodWestDeployAgentPoolName) }
-    variables: { imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ] }
-    strategy: { runOnce: { deploy: { steps:
-    - template: pipelines/deploy/aks-helm-deploy.yml@templates
-      parameters:
-        serviceName: $(serviceName)
-        acrName: $(acrName)
-        chartPath: $(chartPath)
-        kubeServiceConnection: $(prodRegion2KubeServiceConnection)
-        valuesFile: $(prodValuesFile)
-    } } } }
+        REPO_URL=$(git config --get remote.origin.url)
+        AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${REPO_URL#https://}"
+        git push $AUTH_REPO_URL $RELEASE_BRANCH
+      else
+        echo "No new changes to release."
+      fi
