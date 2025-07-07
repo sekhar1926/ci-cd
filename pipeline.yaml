@@ -1,15 +1,18 @@
 # ===================================================================================
-# ==         README: Create Release Pipeline (Final, Corrected Syntax)           ==
+# ==         README: Create Release Pipeline (Final, Corrected Paths)            ==
 # ===================================================================================
 #
 # PURPOSE:
-# This is the definitive pipeline for starting a new release for a single microservice,
-# using a centralized 'semantic-release' configuration.
+# This is the definitive pipeline for starting a new release for a single microservice.
 #
-# CORRECTION (YAML Syntax Fix):
-# This version corrects the YAML indentation for all 'Bash@3' tasks. The 'script'
-# and 'workingDirectory' keys have been correctly nested under the 'inputs' block,
-# which resolves the "Unexpected value" parsing error.
+# CORRECTION (Definitive Pathing Fix):
+# This version simplifies the checkout logic to resolve file path errors.
+# 1.  The confusing `checkout: self, path: 'platform'` step has been REMOVED. The
+#     pipeline agent automatically checks out its own repository to the default
+#     working directory.
+# 2.  The `CopyFiles` task's 'SourceFolder' has been corrected to point to the
+#     now-simple path: `$(System.DefaultWorkingDirectory)/config`.
+# This creates a predictable file structure and is the most reliable solution.
 #
 # ===================================================================================
 
@@ -40,11 +43,10 @@ jobs:
     clean: all
   
   steps:
-  # Step 1: Check out the platform repo to get the config file.
-  - checkout: self
-    path: 'platform'
+  # The agent automatically checks out this pipeline's repo ('self') by default.
+  # No 'checkout: self' step is needed.
 
-  # Step 2: Install tools.
+  # Step 1: Install tools.
   - task: Bash@3
     displayName: 'Install Tools'
     inputs:
@@ -53,7 +55,7 @@ jobs:
         echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
         npm install semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/exec
 
-  # Step 3: Manually clone the target microservice repo.
+  # Step 2: Manually clone the target microservice repo into a 'service-repo' subdirectory.
   - task: Bash@3
     displayName: 'Clone & Checkout Microservice Repo'
     inputs:
@@ -62,6 +64,7 @@ jobs:
         GIT_TOKEN: $(System.AccessToken)
       script: |
         set -e
+        # IMPORTANT: Replace 'YourOrgName' with your actual organization name.
         PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
         REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
         
@@ -71,13 +74,15 @@ jobs:
         echo "Switching to 'develop' branch..."
         cd service-repo
         git checkout develop
-        cd ..
+        # No need to cd back, the next task starts in the default directory.
 
-  # Step 4: Copy the central config file into the microservice directory.
+  # ============================ THE FIX IS HERE ============================
+  # Step 3: Copy the central config file into the microservice directory.
   - task: CopyFiles@2
     displayName: 'Copy Central .releaserc.json'
     inputs:
-      SourceFolder: '$(System.DefaultWorkingDirectory)/platform/config'
+      # The source is now at the correct, simple path.
+      SourceFolder: '$(System.DefaultWorkingDirectory)/config'
       Contents: 'common.releaserc.json'
       TargetFolder: '$(System.DefaultWorkingDirectory)/service-repo'
       OverWrite: true
@@ -85,9 +90,11 @@ jobs:
     displayName: 'Rename config file'
     inputs:
       targetType: 'inline'
+      # The path to the copied file is now correct.
       script: 'Rename-Item -Path "$(System.DefaultWorkingDirectory)/service-repo/common.releaserc.json" -NewName ".releaserc.json"'
+  # =======================================================================
 
-  # Step 5: Run semantic-release on the microservice repo.
+  # Step 4: Run semantic-release on the microservice repo.
   - task: Bash@3
     displayName: 'Calculate Next Version'
     inputs:
@@ -97,10 +104,9 @@ jobs:
         GIT_TOKEN: $(System.AccessToken)
         GH_TOKEN: $(System.AccessToken)
       script: |
-        # We run semantic-release. It will create 'next-version.txt' if there are changes.
         npx semantic-release || true
-
-  # Step 6: Read the version and create the release branch.
+  
+  # Step 5: Read the version and create the release branch.
   - task: Bash@3
     displayName: 'Create and Push Release Branch'
     inputs:
