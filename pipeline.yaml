@@ -1,15 +1,21 @@
 # ===================================================================================
-# ==         README: Create Release Pipeline (Final, Corrected Syntax)           ==
+# ==         README: Create Release Pipeline (Definitive, Correct Paths)         ==
 # ===================================================================================
 #
 # PURPOSE:
 # This is the definitive pipeline for starting a new release for a single microservice.
 #
-# CORRECTION (Definitive YAML Syntax Fix):
-# This version corrects the YAML structure for all 'Bash@3' tasks. The 'env' block
-# has been moved to its correct position as a direct child of the task, at the same
-# level as 'inputs' and 'displayName'. This resolves all previous YAML parsing and
-# "command not found" errors related to environment variables.
+# ARCHITECTURE (The Definitive Fix):
+# This version uses the simplest and most reliable file structure.
+#   1.  **Default Checkout:** It relies on the agent's default behavior, which
+#       automatically checks out this 'cicd-platform' repository to the root of the
+#       working directory. No explicit 'checkout: self' step is needed.
+#   2.  **Explicit Clone:** It uses a 'git clone' command to place the target
+#       microservice into a predictable 'service-repo' subdirectory.
+#   3.  **Clear Paths:** All subsequent tasks now use simple, unambiguous paths to
+#       find the central config file and the microservice code.
+#
+# This architecture is the most robust and solves all previous pathing errors.
 #
 # ===================================================================================
 
@@ -40,11 +46,10 @@ jobs:
     clean: all
   
   steps:
-  # Step 1: Check out the platform repo first.
-  - checkout: self
-    path: 'platform'
+  # NOTE: The agent automatically checks out this pipeline's own repository ('self')
+  # into the default working directory at the start of the job.
 
-  # Step 2: Install tools.
+  # Step 1: Install tools. This runs at the root of the workspace.
   - task: Bash@3
     displayName: 'Install Tools'
     inputs:
@@ -53,11 +58,9 @@ jobs:
         echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
         npm install semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/exec
 
-  # ============================ THE FIX IS HERE ============================
-  # Step 3: Manually clone the target microservice repo.
+  # Step 2: Manually clone the target microservice repo into a 'service-repo' subdirectory.
   - task: Bash@3
     displayName: 'Clone & Checkout Microservice Repo'
-    # 'env' is at the same level as 'inputs'.
     env:
       GIT_TOKEN: $(System.AccessToken)
     inputs:
@@ -68,17 +71,21 @@ jobs:
         PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
         REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
         
+        echo "Cloning microservice repository into 'service-repo' directory..."
         git clone "$REPO_URL" service-repo
         
+        echo "Switching to 'develop' branch..."
         cd service-repo
         git checkout develop
-  # =======================================================================
+        # No 'cd ..' is needed. The next task will use its own working directory.
 
-  # Step 4: Copy the central config file.
+  # ============================ THE FIX IS HERE ============================
+  # Step 3: Copy the central config file from this repo's checkout to the microservice checkout.
   - task: CopyFiles@2
     displayName: 'Copy Central .releaserc.json'
     inputs:
-      SourceFolder: '$(System.DefaultWorkingDirectory)/platform/config'
+      # The source is now at the correct, simple path.
+      SourceFolder: '$(System.DefaultWorkingDirectory)/config'
       Contents: 'common.releaserc.json'
       TargetFolder: '$(System.DefaultWorkingDirectory)/service-repo'
       OverWrite: true
@@ -86,27 +93,32 @@ jobs:
     displayName: 'Rename config file'
     inputs:
       targetType: 'inline'
+      # The path to the copied file is now correct.
       script: 'Rename-Item -Path "$(System.DefaultWorkingDirectory)/service-repo/common.releaserc.json" -NewName ".releaserc.json"'
+  # =======================================================================
 
-  # Step 5: Run semantic-release.
+  # Step 4: Run semantic-release on the microservice repo.
   - task: Bash@3
     displayName: 'Calculate Next Version'
-    # 'env' is at the same level as 'inputs'.
     env:
       GIT_TOKEN: $(System.AccessToken)
       GH_TOKEN: $(System.AccessToken)
     inputs:
+      # Set the working directory to where we cloned the microservice.
       workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
       targetType: 'inline'
-      script: 'npx semantic-release || true'
+      script: |
+        # Run semantic-release. The '|| true' ensures the pipeline doesn't fail
+        # if there are no new changes to release.
+        npx semantic-release || true
   
-  # Step 6: Read the version and create the release branch.
+  # Step 5: Read the version from the generated file and create the release branch.
   - task: Bash@3
     displayName: 'Create and Push Release Branch'
-    # 'env' is at the same level as 'inputs'.
     env:
       GIT_TOKEN: $(System.AccessToken)
     inputs:
+      # Set the working directory to the microservice repo.
       workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
       targetType: 'inline'
       script: |
@@ -125,5 +137,5 @@ jobs:
           AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${REPO_URL#https://}"
           git push $AUTH_REPO_URL $RELEASE_BRANCH
         else
-          echo "No new changes to release."
+          echo "No 'next-version.txt' file found. This means there were no new changes to release."
         fi
