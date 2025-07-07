@@ -1,24 +1,15 @@
 # ===================================================================================
-# ==         README: Create Release Pipeline (Centralized Config)                ==
+# ==         README: Create Release Pipeline (Final, Corrected Syntax)           ==
 # ===================================================================================
 #
 # PURPOSE:
-# This is the definitive pipeline for starting a new release for a single microservice.
-# It uses a centralized 'semantic-release' configuration, which is a best practice
-# for managing many services.
+# This is the definitive pipeline for starting a new release for a single microservice,
+# using a centralized 'semantic-release' configuration.
 #
-# HOW IT WORKS:
-# 1.  **Manual Trigger & Dropdown:** A user selects a microservice from a dropdown.
-# 2.  **Clone & Checkout:** It clones the target microservice repository.
-# 3.  **Copy Central Config:** It copies the standard '.releaserc.json' file from this
-#     platform repository into the checked-out microservice directory. This ensures
-#     every service uses the exact same release logic.
-# 4.  **Calculate Version & Write to File:** It runs 'semantic-release', which finds
-#     the config file and writes the new version to 'next-version.txt'.
-# 5.  **Create Release Branch:** It reads the version from the file and creates the
-#     release branch.
-#
-# This workflow requires ZERO release-specific configuration in the microservice repos.
+# CORRECTION (YAML Syntax Fix):
+# This version corrects the YAML indentation for all 'Bash@3' tasks. The 'script'
+# and 'workingDirectory' keys have been correctly nested under the 'inputs' block,
+# which resolves the "Unexpected value" parsing error.
 #
 # ===================================================================================
 
@@ -49,9 +40,9 @@ jobs:
     clean: all
   
   steps:
-  # Step 1: Check out the platform repo first to get the config file.
+  # Step 1: Check out the platform repo to get the config file.
   - checkout: self
-    path: 'platform' # Check out into a 'platform' subdirectory
+    path: 'platform'
 
   # Step 2: Install tools.
   - task: Bash@3
@@ -62,24 +53,25 @@ jobs:
         echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
         npm install semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/exec
 
-  # Step 3: Manually clone the target microservice repo into a separate directory.
+  # Step 3: Manually clone the target microservice repo.
   - task: Bash@3
     displayName: 'Clone & Checkout Microservice Repo'
-    env:
-      GIT_TOKEN: $(System.AccessToken)
-    script: |
-      set -e
-      # IMPORTANT: Replace 'YourOrgName' with your actual organization name.
-      PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
-      REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
-      
-      echo "Cloning microservice repository into 'service-repo' directory..."
-      git clone "$REPO_URL" service-repo
-      
-      echo "Switching to 'develop' branch..."
-      cd service-repo
-      git checkout develop
-      cd ..
+    inputs:
+      targetType: 'inline'
+      env:
+        GIT_TOKEN: $(System.AccessToken)
+      script: |
+        set -e
+        PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
+        REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
+        
+        echo "Cloning microservice repository into 'service-repo' directory..."
+        git clone "$REPO_URL" service-repo
+        
+        echo "Switching to 'develop' branch..."
+        cd service-repo
+        git checkout develop
+        cd ..
 
   # Step 4: Copy the central config file into the microservice directory.
   - task: CopyFiles@2
@@ -88,7 +80,6 @@ jobs:
       SourceFolder: '$(System.DefaultWorkingDirectory)/platform/config'
       Contents: 'common.releaserc.json'
       TargetFolder: '$(System.DefaultWorkingDirectory)/service-repo'
-      # Rename the file to what semantic-release expects by default.
       OverWrite: true
   - task: PowerShell@2
     displayName: 'Rename config file'
@@ -99,36 +90,39 @@ jobs:
   # Step 5: Run semantic-release on the microservice repo.
   - task: Bash@3
     displayName: 'Calculate Next Version'
-    # Set the working directory to the microservice repo.
-    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
-    env:
-      GIT_TOKEN: $(System.AccessToken)
-      GH_TOKEN: $(System.AccessToken)
-    script: |
-      npx semantic-release || true
-  
+    inputs:
+      workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+      targetType: 'inline'
+      env:
+        GIT_TOKEN: $(System.AccessToken)
+        GH_TOKEN: $(System.AccessToken)
+      script: |
+        # We run semantic-release. It will create 'next-version.txt' if there are changes.
+        npx semantic-release || true
+
   # Step 6: Read the version and create the release branch.
   - task: Bash@3
     displayName: 'Create and Push Release Branch'
-    # Set the working directory to the microservice repo.
-    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
-    env:
-      GIT_TOKEN: $(System.AccessToken)
-    script: |
-      set -e
-      if [ -f "next-version.txt" ]; then
-        NEXT_VERSION=$(cat next-version.txt)
-        echo "Found new version: $NEXT_VERSION. Creating release branch."
+    inputs:
+      workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+      targetType: 'inline'
+      env:
+        GIT_TOKEN: $(System.AccessToken)
+      script: |
+        set -e
+        if [ -f "next-version.txt" ]; then
+          NEXT_VERSION=$(cat next-version.txt)
+          echo "Found new version: $NEXT_VERSION. Creating release branch."
 
-        git config --global user.email "pipeline@azuredevops.com"
-        git config --global user.name "Azure DevOps Pipeline"
-        
-        RELEASE_BRANCH="release/$NEXT_VERSION"
-        git checkout -b $RELEASE_BRANCH
+          git config --global user.email "pipeline@azuredevops.com"
+          git config --global user.name "Azure DevOps Pipeline"
+          
+          RELEASE_BRANCH="release/$NEXT_VERSION"
+          git checkout -b $RELEASE_BRANCH
 
-        REPO_URL=$(git config --get remote.origin.url)
-        AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${REPO_URL#https://}"
-        git push $AUTH_REPO_URL $RELEASE_BRANCH
-      else
-        echo "No new changes to release."
-      fi
+          REPO_URL=$(git config --get remote.origin.url)
+          AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${REPO_URL#https://}"
+          git push $AUTH_REPO_URL $RELEASE_BRANCH
+        else
+          echo "No new changes to release."
+        fi
