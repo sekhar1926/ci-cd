@@ -1,82 +1,106 @@
-  # Step 2: Install the versioning tools.
+# ===================================================================================
+# ==               README: Finalize Release Pipeline                           ==
+# ===================================================================================
+#
+# PURPOSE:
+# This pipeline is run MANUALLY after a release has been fully tested and approved
+# by QA. It performs the official promotion of the release to production by merging
+# the release branch and creating the official version tag.
+#
+# HOW IT WORKS:
+# 1.  **Manual Trigger:** A Release Manager runs this, providing the repository name
+#     and the full release branch name (e.g., 'release/1.1.0').
+# 2.  **Automated Git Promotion:** The pipeline executes the critical Git merge strategy:
+#       a. Merges the 'release/*' branch into the 'main' branch.
+#       b. Creates the official, clean version tag (e.g., 'v1.1.0') on the 'main' branch.
+#       c. Merges the 'release/*' branch back into the 'dev' branch to sync any
+#          bug fixes made during QA.
+#       d. Deletes the now-obsolete 'release/*' branch from the remote.
+#
+# DOWNSTREAM EFFECT:
+# Pushing the new version tag (e.g., 'v1.1.0') to the 'main' branch automatically
+# triggers that microservice's main CI/CD pipeline, which then builds the final
+# image and deploys it to the production environment (after a final manual approval).
+#
+# ===================================================================================
+
+trigger: none
+pr: none
+
+parameters:
+- name: microserviceProjectName
+  displayName: 'Microservice Project Name'
+  type: string
+  default: 'API Engineering'
+- name: repositoryName
+  displayName: 'Repository to Finalize'
+  type: string
+- name: releaseBranchName
+  displayName: 'Full Release Branch Name (e.g., release/1.1.0)'
+  type: string
+
+pool:
+  name: 'MB_DevOps'
+
+jobs:
+- job: FinalizeRelease
+  displayName: 'Finalize Release for ${{ parameters.repositoryName }}'
+  workspace:
+    clean: all
+  
+  steps:
   - task: Bash@3
-    displayName: 'Install Versioning Tools'
+    displayName: 'Configure Git Identity'
     inputs:
       script: |
-        echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
-        npm install conventional-recommended-bump semver
-  
-  # Step 3: Clone the target microservice repository.
+        git config --global user.email "svc.pipeline@manubank.com"
+        git config --global user.name "Azure DevOps Pipeline"
+
   - task: Bash@3
     displayName: 'Clone Microservice Repo'
-    env: { GIT_TOKEN: $(System.AccessToken) }
     inputs:
+      env: { GIT_TOKEN: $(System.AccessToken) }
       script: |
         set -e
-        # IMPORTANT: Replace 'YourOrgName' with your actual Azure DevOps organization name.
         PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
-        REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
+        REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/ManufacturersBank/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
         git clone "$REPO_URL" service-repo
 
-  # Step 4: Sync local branches with the remote.
   - task: Bash@3
-    displayName: 'Sync Git Branches'
-    inputs:
-      workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
-      script: |
-        set -e
-        echo "Fetching all remote branches and tags..."
-        git fetch --all --tags
-
-        echo "Syncing local 'main' with remote 'origin/main'..."
-        git checkout main
-        git reset --hard origin/main
-
-        echo "Syncing local 'dev' with remote 'origin/dev'..."
-        git checkout dev
-        git reset --hard origin/dev
-  
-  # Step 5: Get the last version and calculate the next one.
-  - task: Bash@3
-    displayName: 'Calculate Next Version'
-    name: CalculateVersion
-    inputs:
-      workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
-      script: |
-        set -e
-        LAST_TAG=$(git describe --tags --abbrev=0 `git rev-list --tags --max-count=1` || echo "v0.0.0")
-        LAST_VERSION_CLEAN=${LAST_TAG#v}
-        echo "Last release version found: $LAST_VERSION_CLEAN"
-        
-        BUMP_TYPE=$(npx conventional-recommended-bump -p angular)
-        echo "Recommended bump type based on new commits: $BUMP_TYPE"
-
-        NEXT_VERSION=$(npx semver -i $BUMP_TYPE $LAST_VERSION_CLEAN)
-        echo "Calculated next version: $NEXT_VERSION"
-
-        echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
-
-  # Step 6: Create and push the release branch.
-  - task: Bash@3
-    displayName: 'Create and Push Release Branch'
-    condition: succeeded()
+    displayName: 'Merge, Tag, and Push Release'
     inputs:
       workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
       env: { GIT_TOKEN: $(System.AccessToken) }
       script: |
         set -e
-        NEXT_VERSION="$(CalculateVersion.NextVersion)"
-        
-        if [ -z "$NEXT_VERSION" ]; then
-          echo "No new version was calculated. Skipping branch creation."
-        else
-          echo "Creating release branch for version $NEXT_VERSION."
-          RELEASE_BRANCH="release/$NEXT_VERSION"
-          
-          git checkout -b $RELEASE_BRANCH
+        RELEASE_BRANCH="${{ parameters.releaseBranchName }}"
+        AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${(git config --get remote.origin.url)#https://}"
 
-          AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${(git config --get remote.origin.url)#https://}"
-          git push $AUTH_REPO_URL $RELEASE_BRANCH
+        # 1. Fetch all latest changes
+        git fetch --all --tags
 
-          echo "Successfully created and pushed $RELEASE_BRANCH"
-        fi
+        # 2. MERGE TO MAIN
+        echo "Merging $RELEASE_BRANCH into main..."
+        git checkout main
+        git reset --hard origin/main
+        git merge "origin/$RELEASE_BRANCH" --no-ff -m "Merge release: $(basename $RELEASE_BRANCH)"
+        git push $AUTH_REPO_URL main
+
+        # 3. CREATE AND PUSH TAG
+        VERSION_TAG="v${RELEASE_BRANCH#release/}"
+        echo "Creating tag $VERSION_TAG on main..."
+        git tag $VERSION_TAG
+        git push $AUTH_REPO_URL $VERSION_TAG
+
+        # 4. MERGE BACK TO DEV
+        echo "Merging $RELEASE_BRANCH back into dev to sync changes..."
+        git checkout dev
+        git reset --hard origin/dev
+        git merge "origin/$RELEASE_BRANCH" --no-ff -m "Merge release: $(basename $RELEASE_BRANCH) into dev"
+        git push $AUTH_REPO_URL dev
+
+        # 5. DELETE THE RELEASE BRANCH
+        echo "Deleting remote branch $RELEASE_BRANCH..."
+        git push $AUTH_REPO_URL --delete $RELEASE_BRANCH
+
+        echo "Release $VERSION_TAG has been successfully finalized."
