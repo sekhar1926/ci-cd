@@ -1,72 +1,7 @@
-# ===================================================================================
-# ==           README: Create Single Service Release Pipeline (Final)            ==
-# ===================================================================================
-#
-# PURPOSE:
-# This is the definitive, best-practice pipeline for starting a new release for a
-# single microservice. It is designed to be user-friendly, robust, and free of
-# side effects.
-#
-# HOW IT WORKS:
-# 1.  **Manual Trigger & Dropdown:** A Release Manager runs this pipeline from the ADO
-#     UI and selects the target microservice from a dropdown menu.
-# 2.  **Clone & Sync:** It uses explicit 'git' commands to clone the target microservice
-#     repository and synchronize its 'main' and 'dev' branches to ensure a
-#     complete and accurate view of the Git history.
-# 3.  **Correct Tools for Analysis:** It uses the lightweight 'conventional-recommended-bump'
-#     and 'semver' packages. These tools ONLY analyze commits and calculate a version
-#     number; they are physically incapable of creating Git tags or publishing.
-#     This completely solves the "premature tag creation" problem.
-# 4.  **Create Release Branch:** After successfully calculating the next version, it
-#     creates and pushes the corresponding 'release/*' branch (e.g., 'release/1.1.0').
-#
-# DOWNSTREAM EFFECT:
-# The push of this new release branch triggers that microservice's main CI/CD
-# pipeline, which then builds a release candidate for the QA environment.
-#
-# ===================================================================================
-
-trigger: none
-pr: none
-
-parameters:
-- name: microserviceProjectName
-  displayName: 'Microservice Project Name'
-  type: string
-  default: 'API Engineering'
-- name: repositoryName
-  displayName: 'Microservice to Release'
-  type: string
-  default: 'manubank-transactions-microservice'
-  values:
-    - order-service
-    - payment-service
-    - manubank-transactions-microservice
-
-pool:
-  name: 'MB_DevOps'
-
-jobs:
-- job: CreateReleaseForSingleService
-  displayName: 'Create Release for ${{ parameters.repositoryName }}'
-  workspace:
-    clean: all
-  
-  steps:
-  # Step 1: Set the Git user identity for all subsequent Git operations.
-  - task: Bash@3
-    displayName: 'Configure Git Identity'
-    script: |
-      # IMPORTANT: Use a policy-compliant email address for your organization.
-      git config --global user.email "svc.pipeline@yourcompany.com"
-      git config --global user.name "Azure DevOps Pipeline"
-      echo "Git identity configured for all subsequent tasks."
-
-  # Step 2: Install the lightweight analysis and versioning tools.
+  # Step 2: Install the versioning tools.
   - task: Bash@3
     displayName: 'Install Versioning Tools'
     inputs:
-      targetType: 'inline'
       script: |
         echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
         npm install conventional-recommended-bump semver
@@ -75,78 +10,73 @@ jobs:
   - task: Bash@3
     displayName: 'Clone Microservice Repo'
     env: { GIT_TOKEN: $(System.AccessToken) }
-    script: |
-      set -e
-      # IMPORTANT: Replace 'YourOrgName' with your actual Azure DevOps organization name.
-      PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
-      REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
-      git clone "$REPO_URL" service-repo
+    inputs:
+      script: |
+        set -e
+        # IMPORTANT: Replace 'YourOrgName' with your actual Azure DevOps organization name.
+        PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
+        REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
+        git clone "$REPO_URL" service-repo
 
-  # Step 4: Sync local branches with the remote to ensure a complete history.
+  # Step 4: Sync local branches with the remote.
   - task: Bash@3
     displayName: 'Sync Git Branches'
-    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
-    script: |
-      set -e
-      echo "Fetching all remote branches and tags..."
-      git fetch --all --tags
+    inputs:
+      workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+      script: |
+        set -e
+        echo "Fetching all remote branches and tags..."
+        git fetch --all --tags
 
-      echo "Syncing local 'main' with remote 'origin/main'..."
-      git checkout main
-      git reset --hard origin/main
+        echo "Syncing local 'main' with remote 'origin/main'..."
+        git checkout main
+        git reset --hard origin/main
 
-      echo "Syncing local 'dev' with remote 'origin/dev'..."
-      git checkout dev
-      git reset --hard origin/dev
+        echo "Syncing local 'dev' with remote 'origin/dev'..."
+        git checkout dev
+        git reset --hard origin/dev
   
   # Step 5: Get the last version and calculate the next one.
   - task: Bash@3
     displayName: 'Calculate Next Version'
     name: CalculateVersion
-    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
-    script: |
-      set -e
-      # Get the latest Git tag from the entire repository history.
-      # Fallback to v0.0.0 if no tags exist for the very first run.
-      LAST_TAG=$(git describe --tags --abbrev=0 `git rev-list --tags --max-count=1` || echo "v0.0.0")
-      
-      # Remove the 'v' prefix for the semver tool.
-      LAST_VERSION_CLEAN=${LAST_TAG#v}
-      echo "Last release version found: $LAST_VERSION_CLEAN"
-      
-      # Use conventional-recommended-bump to get the recommended action (patch, minor, major).
-      # It analyzes commits between the last tag and the HEAD of the current branch (dev).
-      BUMP_TYPE=$(npx conventional-recommended-bump -p angular)
-      echo "Recommended bump type based on new commits: $BUMP_TYPE"
+    inputs:
+      workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+      script: |
+        set -e
+        LAST_TAG=$(git describe --tags --abbrev=0 `git rev-list --tags --max-count=1` || echo "v0.0.0")
+        LAST_VERSION_CLEAN=${LAST_TAG#v}
+        echo "Last release version found: $LAST_VERSION_CLEAN"
+        
+        BUMP_TYPE=$(npx conventional-recommended-bump -p angular)
+        echo "Recommended bump type based on new commits: $BUMP_TYPE"
 
-      # Use the semver tool to apply the bump and calculate the next version number.
-      NEXT_VERSION=$(npx semver -i $BUMP_TYPE $LAST_VERSION_CLEAN)
-      echo "Calculated next version: $NEXT_VERSION"
+        NEXT_VERSION=$(npx semver -i $BUMP_TYPE $LAST_VERSION_CLEAN)
+        echo "Calculated next version: $NEXT_VERSION"
 
-      # Set the calculated version as an output variable for the next step.
-      echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
+        echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
 
   # Step 6: Create and push the release branch.
   - task: Bash@3
     displayName: 'Create and Push Release Branch'
-    condition: succeeded() # This step will run if the previous one succeeded.
-    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
-    env: { GIT_TOKEN: $(System.AccessToken) }
-    script: |
-      set -e
-      NEXT_VERSION="$(CalculateVersion.NextVersion)"
-      
-      if [ -z "$NEXT_VERSION" ]; then
-        echo "No new version was calculated. Skipping branch creation."
-      else
-        echo "Creating release branch for version $NEXT_VERSION."
-        RELEASE_BRANCH="release/$NEXT_VERSION"
+    condition: succeeded()
+    inputs:
+      workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+      env: { GIT_TOKEN: $(System.AccessToken) }
+      script: |
+        set -e
+        NEXT_VERSION="$(CalculateVersion.NextVersion)"
         
-        # We are already on the 'dev' branch, so we create the new branch from here.
-        git checkout -b $RELEASE_BRANCH
+        if [ -z "$NEXT_VERSION" ]; then
+          echo "No new version was calculated. Skipping branch creation."
+        else
+          echo "Creating release branch for version $NEXT_VERSION."
+          RELEASE_BRANCH="release/$NEXT_VERSION"
+          
+          git checkout -b $RELEASE_BRANCH
 
-        AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${(git config --get remote.origin.url)#https://}"
-        git push $AUTH_REPO_URL $RELEASE_BRANCH
+          AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${(git config --get remote.origin.url)#https://}"
+          git push $AUTH_REPO_URL $RELEASE_BRANCH
 
-        echo "Successfully created and pushed $RELEASE_BRANCH"
-      fi
+          echo "Successfully created and pushed $RELEASE_BRANCH"
+        fi
