@@ -1,21 +1,28 @@
 # ===================================================================================
-# ==         README: Create Release Pipeline (Definitive, Correct Paths)         ==
+# ==           README: Create Single Service Release Pipeline (Final)            ==
 # ===================================================================================
 #
 # PURPOSE:
-# This is the definitive pipeline for starting a new release for a single microservice.
+# This is the definitive, best-practice pipeline for starting a new release for a
+# single microservice. It is designed to be user-friendly, robust, and free of
+# side effects.
 #
-# ARCHITECTURE (The Definitive Fix):
-# This version uses the simplest and most reliable file structure.
-#   1.  **Default Checkout:** It relies on the agent's default behavior, which
-#       automatically checks out this 'cicd-platform' repository to the root of the
-#       working directory. No explicit 'checkout: self' step is needed.
-#   2.  **Explicit Clone:** It uses a 'git clone' command to place the target
-#       microservice into a predictable 'service-repo' subdirectory.
-#   3.  **Clear Paths:** All subsequent tasks now use simple, unambiguous paths to
-#       find the central config file and the microservice code.
+# HOW IT WORKS:
+# 1.  **Manual Trigger & Dropdown:** A Release Manager runs this pipeline from the ADO
+#     UI and selects the target microservice from a dropdown menu.
+# 2.  **Clone & Sync:** It uses explicit 'git' commands to clone the target microservice
+#     repository and synchronize its 'main' and 'dev' branches to ensure a
+#     complete and accurate view of the Git history.
+# 3.  **Correct Tools for Analysis:** It uses the lightweight 'conventional-recommended-bump'
+#     and 'semver' packages. These tools ONLY analyze commits and calculate a version
+#     number; they are physically incapable of creating Git tags or publishing.
+#     This completely solves the "premature tag creation" problem.
+# 4.  **Create Release Branch:** After successfully calculating the next version, it
+#     creates and pushes the corresponding 'release/*' branch (e.g., 'release/1.1.0').
 #
-# This architecture is the most robust and solves all previous pathing errors.
+# DOWNSTREAM EFFECT:
+# The push of this new release branch triggers that microservice's main CI/CD
+# pipeline, which then builds a release candidate for the QA environment.
 #
 # ===================================================================================
 
@@ -46,107 +53,100 @@ jobs:
     clean: all
   
   steps:
-  # NOTE: The agent automatically checks out this pipeline's own repository ('self')
-  # into the default working directory at the start of the job.
-
-  # Step 1: Install tools. This runs at the root of the workspace.
+  # Step 1: Set the Git user identity for all subsequent Git operations.
   - task: Bash@3
-    displayName: 'Install Tools'
+    displayName: 'Configure Git Identity'
+    script: |
+      # IMPORTANT: Use a policy-compliant email address for your organization.
+      git config --global user.email "svc.pipeline@yourcompany.com"
+      git config --global user.name "Azure DevOps Pipeline"
+      echo "Git identity configured for all subsequent tasks."
+
+  # Step 2: Install the lightweight analysis and versioning tools.
+  - task: Bash@3
+    displayName: 'Install Versioning Tools'
     inputs:
       targetType: 'inline'
       script: |
         echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
-        npm install semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/exec
-
-  # Step 2: Manually clone the target microservice repo into a 'service-repo' subdirectory.
+        npm install conventional-recommended-bump semver
+  
+  # Step 3: Clone the target microservice repository.
   - task: Bash@3
-    displayName: 'Clone & Checkout Microservice Repo'
-    env:
-      GIT_TOKEN: $(System.AccessToken)
-    inputs:
-      targetType: 'inline'
-      script: |
-        set -e
-        # IMPORTANT: Replace 'YourOrgName' with your actual organization name.
-        PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
-        REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
-        
-        echo "Cloning microservice repository into 'service-repo' directory..."
-        git clone "$REPO_URL" service-repo
-        
-        echo "Switching to 'develop' branch..."
-        cd service-repo
-        git checkout develop
-        # No 'cd ..' is needed. The next task will use its own working directory.
+    displayName: 'Clone Microservice Repo'
+    env: { GIT_TOKEN: $(System.AccessToken) }
+    script: |
+      set -e
+      # IMPORTANT: Replace 'YourOrgName' with your actual Azure DevOps organization name.
+      PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
+      REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
+      git clone "$REPO_URL" service-repo
 
-  # ============================ THE FIX IS HERE ============================
-  # Step 3: Copy the central config file from this repo's checkout to the microservice checkout.
-  - task: CopyFiles@2
-    displayName: 'Copy Central .releaserc.json'
-    inputs:
-      # The source is now at the correct, simple path.
-      SourceFolder: '$(System.DefaultWorkingDirectory)/config'
-      Contents: 'common.releaserc.json'
-      TargetFolder: '$(System.DefaultWorkingDirectory)/service-repo'
-      OverWrite: true
-  - task: PowerShell@2
-    displayName: 'Rename config file'
-    inputs:
-      targetType: 'inline'
-      # The path to the copied file is now correct.
-      script: 'Rename-Item -Path "$(System.DefaultWorkingDirectory)/service-repo/common.releaserc.json" -NewName ".releaserc.json"'
-  # =======================================================================
+  # Step 4: Sync local branches with the remote to ensure a complete history.
+  - task: Bash@3
+    displayName: 'Sync Git Branches'
+    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+    script: |
+      set -e
+      echo "Fetching all remote branches and tags..."
+      git fetch --all --tags
 
-  # Step 4: Run semantic-release on the microservice repo.
+      echo "Syncing local 'main' with remote 'origin/main'..."
+      git checkout main
+      git reset --hard origin/main
+
+      echo "Syncing local 'dev' with remote 'origin/dev'..."
+      git checkout dev
+      git reset --hard origin/dev
+  
+  # Step 5: Get the last version and calculate the next one.
   - task: Bash@3
     displayName: 'Calculate Next Version'
-    env:
-      GIT_TOKEN: $(System.AccessToken)
-      GH_TOKEN: $(System.AccessToken)
-    inputs:
-      # Set the working directory to where we cloned the microservice.
-      workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
-      targetType: 'inline'
-      script: |
-        # Run semantic-release. The '|| true' ensures the pipeline doesn't fail
-        # if there are no new changes to release.
-        npx semantic-release || true
-  
-  # Step 5: Read the version from the generated file and create the release branch.
+    name: CalculateVersion
+    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+    script: |
+      set -e
+      # Get the latest Git tag from the entire repository history.
+      # Fallback to v0.0.0 if no tags exist for the very first run.
+      LAST_TAG=$(git describe --tags --abbrev=0 `git rev-list --tags --max-count=1` || echo "v0.0.0")
+      
+      # Remove the 'v' prefix for the semver tool.
+      LAST_VERSION_CLEAN=${LAST_TAG#v}
+      echo "Last release version found: $LAST_VERSION_CLEAN"
+      
+      # Use conventional-recommended-bump to get the recommended action (patch, minor, major).
+      # It analyzes commits between the last tag and the HEAD of the current branch (dev).
+      BUMP_TYPE=$(npx conventional-recommended-bump -p angular)
+      echo "Recommended bump type based on new commits: $BUMP_TYPE"
+
+      # Use the semver tool to apply the bump and calculate the next version number.
+      NEXT_VERSION=$(npx semver -i $BUMP_TYPE $LAST_VERSION_CLEAN)
+      echo "Calculated next version: $NEXT_VERSION"
+
+      # Set the calculated version as an output variable for the next step.
+      echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
+
+  # Step 6: Create and push the release branch.
   - task: Bash@3
     displayName: 'Create and Push Release Branch'
-    env:
-      GIT_TOKEN: $(System.AccessToken)
-    inputs:
-      # Set the working directory to the microservice repo.
-      workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
-      targetType: 'inline'
-      script: |
-        set -e
-        if [ -f "next-version.txt" ]; then
-          NEXT_VERSION=$(cat next-version.txt)
-          echo "Found new version: $NEXT_VERSION. Creating release branch."
+    condition: succeeded() # This step will run if the previous one succeeded.
+    workingDirectory: '$(System.DefaultWorkingDirectory)/service-repo'
+    env: { GIT_TOKEN: $(System.AccessToken) }
+    script: |
+      set -e
+      NEXT_VERSION="$(CalculateVersion.NextVersion)"
+      
+      if [ -z "$NEXT_VERSION" ]; then
+        echo "No new version was calculated. Skipping branch creation."
+      else
+        echo "Creating release branch for version $NEXT_VERSION."
+        RELEASE_BRANCH="release/$NEXT_VERSION"
+        
+        # We are already on the 'dev' branch, so we create the new branch from here.
+        git checkout -b $RELEASE_BRANCH
 
-          git config --global user.email "pipeline@azuredevops.com"
-          git config --global user.name "Azure DevOps Pipeline"
-          
-          RELEASE_BRANCH="release/$NEXT_VERSION"
-          git checkout -b $RELEASE_BRANCH
+        AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${(git config --get remote.origin.url)#https://}"
+        git push $AUTH_REPO_URL $RELEASE_BRANCH
 
-          REPO_URL=$(git config --get remote.origin.url)
-          AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${REPO_URL#https://}"
-          git push $AUTH_REPO_URL $RELEASE_BRANCH
-        else
-          echo "No 'next-version.txt' file found. This means there were no new changes to release."
-        fi
-          { "type": "docs", "scope": "README", "release": "patch" },
-          { "type": "style", "release": "patch" },
-          { "type": "refactor", "release": "patch" },
-          { "type": "chore", "release": "patch" },
-          { "type": "build", "release": "patch" },
-          { "type": "ci", "release": "patch" },
-          { "type": "revert", "release": "patch" },
-          { "breaking": true, "release": "major" },
-          { "type": "feat", "release": "minor" },
-          { "type": "fix", "release": "patch" },
-          { "type": "perf", "release": "patch" }
+        echo "Successfully created and pushed $RELEASE_BRANCH"
+      fi
