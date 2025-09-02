@@ -1,0 +1,191 @@
+# ===================================================================================
+# ==         README: MICROSERVICE CI/CD PIPELINE (Build Once Model)              ==
+# ===================================================================================
+#
+# PURPOSE:
+# This pipeline follows the "Build Once, Promote Artifact" security principle. It
+# ensures that the exact same Docker image artifact is promoted through all
+# environments, from QA to Production.
+#
+# HOW IT WORKS:
+# 1.  **Stage 1: Build & Validate:**
+#     - This stage runs for ALL triggers (dev, release/*, tags, PRs).
+#     - Its ONLY job is to compile, test, and (if not a PR) build a Docker image
+#       with the appropriate tag (e.g., 'dev-commit', '1.1.0-rc') and push it to ACR.
+#     - This is the ONLY stage where a `docker build` occurs for a release.
+#
+# 2.  **Stage 2: Deploy to Dev:**
+#     - CONDITION: Only runs for pushes to the 'dev' branch.
+#     - It deploys the 'dev-commit' image that was just built.
+#
+# 3.  **Stage 3: Deploy to QA:**
+#     - CONDITION: Only runs for pushes to a 'release/*' branch.
+#     - It deploys the '...-rc' (Release Candidate) image from the Build stage.
+#     - This is the artifact that the QA team will test and approve.
+#
+# 4.  **Stage 4: Promote & Deploy to Prod:**
+#     - CONDITION: Only runs when a 'v*.*.*' tag is pushed.
+#     - This stage DOES NOT depend on the Build stage from this pipeline run.
+#     - It has two jobs:
+#         a. **Promote_Image:** Finds the corresponding '...-rc' image in ACR and adds
+#            the final version tag (e.g., '1.1.0') to it. This is a fast, server-side re-tag.
+#         b. **Deploy_Prod_Jobs:** These jobs wait for the promotion to finish, then
+#            deploy the newly tagged, QA-approved image to the Production clusters.
+#
+# ===================================================================================
+
+trigger:
+  branches:
+    include:
+      - dev
+      - release/*
+  tags:
+    include:
+      - v*.*.*
+
+pr:
+  branches: { include: [main, dev, release/*] }
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: YourPlatformProject/cicd-platform
+      ref: main
+
+variables:
+  # ... (All your variables for serviceName, acrName, connections, etc. remain the same)
+  - name: serviceName
+    value: 'manubank-transactions-microservice'
+  - name: acrName
+    value: 'acrmanubankdev'
+  - name: chartPath
+    value: 'charts/common-app'
+  # ... etc.
+
+stages:
+# STAGE 1: The "One Build" stage. This runs for most triggers.
+- stage: Build
+  displayName: 'Build and Validate'
+  jobs:
+  - template: pipelines/build/kotlin-docker-build.yml@templates
+    parameters:
+      serviceName: $(serviceName)
+      acrName: $(acrName)
+      acrConnection: 'acr-service-connection' # Your ACR connection name
+
+# STAGE 2: Deploy to Dev environment. Only runs on a 'dev' branch push.
+- stage: Deploy_Dev
+  displayName: 'Deploy to Dev'
+  dependsOn: Build
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
+  jobs:
+  - deployment: DeployToDevAKS
+    environment: 'DEV Environment'
+    pool: { name: 'MB_Hub' }
+    variables:
+      imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ]
+    strategy: { runOnce: { deploy: { steps:
+    - checkout: self
+    - checkout: templates
+      path: 'platform'
+    - template: pipelines/deploy/aks-helm-deploy.yml@templates
+      parameters:
+        serviceName: $(serviceName)
+        acrName: $(acrName)
+        chartPath: $(chartPath)
+        kubeServiceConnection: 'dev-kube-sc'
+        valuesFile: 'helm-values/dev.yaml'
+        agentPoolName: 'MB_Hub'
+    } } } }
+
+# STAGE 3: Deploy the Release Candidate to QA. Only runs on a 'release/*' branch push.
+- stage: Deploy_QA
+  displayName: 'Deploy Release Candidate to QA'
+  dependsOn: Build
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
+  jobs:
+  - deployment: Deploy_QA_East
+    environment: 'QA Environment - Region 1'
+    pool: { name: 'MB_Hub_QA_EAST' }
+    variables: { imageTag: $[ stageDependencies.Build.BuildJob.outputs['SetImageTag.imageTag'] ] }
+    strategy: { runOnce: { deploy: { steps:
+    - checkout: self
+    - checkout: templates
+      path: 'platform'
+    - template: pipelines/deploy/aks-helm-deploy.yml@templates
+      parameters:
+        serviceName: $(serviceName)
+        acrName: $(acrName)
+        chartPath: $(chartPath)
+        kubeServiceConnection: 'qa-eastus-kube-sc'
+        valuesFile: 'helm-values/qa.yaml'
+        agentPoolName: 'MB_Hub_QA_EAST'
+    } } } }
+  # ... Add Deploy_QA_West job here, following the same pattern ...
+
+# STAGE 4: Promote the artifact and Deploy to Production. Only runs on a 'v*' tag push.
+- stage: Deploy_Prod
+  displayName: 'Promote and Deploy to Production'
+  dependsOn: [] # This stage runs independently and does not depend on the Build stage of this run.
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
+  jobs:
+  # JOB 1: Promote the Image by re-tagging it in ACR.
+  - job: Promote_Image
+    displayName: 'Promote Release Candidate in ACR'
+    pool: { name: 'MB_DevOps' } # Use a build agent with Azure CLI
+    steps:
+    - task: AzureCLI@2
+      name: RetagACRImage
+      displayName: 'Add Production tag to QA-approved image'
+      inputs:
+        azureSubscription: 'acr-service-connection'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          set -e
+          # Get the tag that triggered this pipeline, e.g., 'refs/tags/v1.1.0'
+          TAG_NAME="$(Build.SourceBranch)"
+          
+          # Extract the clean version number, e.g., '1.1.0'
+          FINAL_VERSION_TAG=${TAG_NAME#refs/tags/v}
+          
+          # Construct the name of the Release Candidate tag that was tested in QA
+          RC_TAG="${FINAL_VERSION_TAG}-rc"
+          
+          echo "Promoting image for release: $FINAL_VERSION_TAG"
+          echo "Source (QA-approved) tag: $RC_TAG"
+          echo "Destination (Production) tag: $FINAL_VERSION_TAG"
+          
+          # Use 'az acr repository import' (renamed from 'az acr import') for efficient, server-side re-tagging.
+          az acr repository import \
+            --name $(acrName) \
+            --source $(acrName).azurecr.io/$(serviceName):$RC_TAG \
+            --image $(serviceName):$FINAL_VERSION_TAG
+          
+          echo "Successfully promoted image by adding tag: $FINAL_VERSION_TAG"
+          # Set the final tag as an output variable for the deployment jobs
+          echo "##vso[task.setvariable variable=finalTag;isOutput=true]$FINAL_VERSION_TAG"
+
+  # JOB 2: Deploy the Promoted Image to Production clusters. This depends on the promotion job.
+  - deployment: Deploy_Prod_East
+    dependsOn: Promote_Image
+    environment: 'PROD Environment - Region 1'
+    pool: { name: 'MB_Hub_Prod_EAST' }
+    variables:
+      # Get the final tag from the previous job's output
+      imageTag: $[ dependencies.Promote_Image.outputs['RetagACRImage.finalTag'] ]
+    strategy: { runOnce: { deploy: { steps:
+    - checkout: self
+    - checkout: templates
+      path: 'platform'
+    - template: pipelines/deploy/aks-helm-deploy.yml@templates
+      parameters:
+        serviceName: $(serviceName)
+        acrName: $(acrName)
+        chartPath: $(chartPath)
+        kubeServiceConnection: 'prod-eastus-kube-sc'
+        valuesFile: 'helm-values/prod.yaml'
+        agentPoolName: 'MB_Hub_Prod_EAST'
+    } } } }
+  # ... Add Deploy_Prod_West job here, following the same pattern ...
