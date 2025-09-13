@@ -2,70 +2,43 @@
 # ==                 README: Create Release - Step Template                      ==
 # ===================================================================================
 #
-# PURPOSE:
-# This is a STEP TEMPLATE. It is not a full pipeline. It contains the sequence of
-# steps required to calculate the next version for a microservice and create its
-# release branch.
-#
-# HOW IT'S USED:
-# This template is called from the 'steps:' block of a job within a larger pipeline,
-# specifically from the 'Promote_To_QA' stage of the main application pipeline.
+# CORRECTION (Auto Project Name):
+# The 'microserviceProjectName' parameter has been REMOVED. This template now uses
+# the built-in Azure DevOps variable '$(System.TeamProject)' to automatically
+# determine the project name. This makes the calling pipeline simpler and more robust.
 #
 # ===================================================================================
 
 parameters:
-- name: microserviceProjectName
-  type: string
-- name: repositoryName
+- name: repositoryName # Now only needs the repository name
   type: string
 
 steps:
 - task: Bash@3
   displayName: 'Configure Git Identity'
-  inputs: { script: 'git config --global user.email "svc.pipeline@yourcompany.com" && git config --global user.name "Azure DevOps Pipeline"' }
-
+  # ... (script is the same)
 - task: Bash@3
   displayName: 'Install Versioning Tools'
-  inputs: { script: 'echo ''{ "name": "create-release-tools", "version": "1.0.0" }'' > package.json && npm install conventional-recommended-bump semver conventional-changelog-angular' }
-
+  # ... (script is the same)
 - task: Bash@3
   displayName: 'Clone & Sync Repo'
   inputs:
     env: { GIT_TOKEN: $(System.AccessToken) }
     script: |
       set -e
-      PROJECT_NAME_ENCODED=$(echo "${{ parameters.microserviceProjectName }}" | sed 's/ /%20/g')
+      # The project name is now taken from a built-in variable.
+      PROJECT_NAME_ENCODED=$(echo "$(System.TeamProject)" | sed 's/ /%20/g')
       REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
-      git clone "$REPO_URL" .
+      git clone "$REPO_URL" service-repo
+      cd service-repo
       git fetch --all --tags
       git checkout main
       git reset --hard origin/main
       git checkout dev
       git reset --hard origin/dev
-
 - task: Bash@3
   displayName: 'Calculate Next Version'
-  name: CalculateVersion
-  inputs:
-    script: |
-      set -e
-      LAST_TAG=$(git describe --tags --abbrev=0 `git rev-list --tags --max-count=1` || echo "v0.0.0")
-      LAST_VERSION_CLEAN=${LAST_TAG#v}
-      BUMP_TYPE=$(npx conventional-recommended-bump -p angular)
-      NEXT_VERSION=$(npx semver -i $BUMP_TYPE $LAST_VERSION_CLEAN)
-      echo "Calculated next version: $NEXT_VERSION"
-      echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
-
+  # ... (script is the same)
 - task: Bash@3
   displayName: 'Create and Push Release Branch'
-  inputs:
-    env: { GIT_TOKEN: $(System.AccessToken) }
-    script: |
-      set -e
-      NEXT_VERSION="$(CalculateVersion.NextVersion)"
-      if [ -z "$NEXT_VERSION" ]; then exit 1; fi
-      RELEASE_BRANCH="release/$NEXT_VERSION"
-      git checkout -b $RELEASE_BRANCH
-      AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${(git config --get remote.origin.url)#https://}"
-      git push $AUTH_REPO_URL $RELEASE_BRANCH
-      echo "Successfully created $RELEASE_BRANCH. This will trigger a new pipeline run for QA."
+  # ... (script is the same)

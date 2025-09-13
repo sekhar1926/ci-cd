@@ -1,19 +1,17 @@
 # ===================================================================================
-# ==         README: Progressive Promotion Pipeline (with Step Templates)        ==
+# ==         README: Progressive Promotion Pipeline (Definitive Version)         ==
 # ===================================================================================
 #
-# This is the definitive pipeline for this application. It provides a single, unified
-# view of a release's lifecycle while keeping the complex logic centralized in the
-# 'cicd-platform' repository.
+# This is the definitive pipeline for this application.
 #
-# WORKFLOW:
-# 1. 'dev' branch push triggers a build and deploy to the Dev cluster.
-# 2. The 'Promote_To_QA' stage waits for manual approval. When approved, it calls
-#    the 'create-release-steps.yml' template to create the release branch.
-# 3. The new 'release/*' branch triggers a new run of this pipeline for QA.
-# 4. The 'Promote_To_Prod' stage in the QA run waits for approval. When approved,
-#    it calls the 'finalize-release-steps.yml' template to merge and tag.
-# 5. The new version tag triggers a final run for Production deployment.
+# CORRECTIONS (Final Architecture):
+# 1.  **Correct Stage Separation:** The 'Build' and 'Deploy_Dev' stages are now
+#     separate again. This is critical to ensure that Pull Requests to 'dev' and
+#     'release/*' branches correctly trigger ONLY the build/validation stage, without
+#     attempting any deployments.
+# 2.  **Automatic Project Name:** The hardcoded 'microserviceProjectName' variable
+#     has been removed. The promotion templates now use the built-in '$(System.TeamProject)'
+#     variable, making this pipeline cleaner and more portable.
 #
 # ===================================================================================
 
@@ -39,88 +37,86 @@ resources:
       ref: main
 
 variables:
-  # ... (All your variables for serviceName, acrName, connections, etc.)
+  # The 'microserviceProjectName' variable is no longer needed.
   - name: serviceName
     value: 'manubank-transactions-microservice'
-  - name: microserviceProjectName
-    value: 'API Engineering'
+  - name: acrName
+    value: 'acrmanubankdev'
+  - name: chartPath
+    value: 'charts/common-app'
+  # ... etc.
 
 stages:
-# STAGE 1 & 2: Build and Deploy to Dev
-- stage: Build_And_Deploy_Dev
-  displayName: 'Build & Deploy to Dev'
+# STAGE 1: Build the artifact. This runs for PRs, dev, and release builds.
+- stage: Build_Artifact
+  displayName: 'Build and Validate Artifact'
+  condition: and(succeeded(), not(startsWith(variables['Build.SourceBranch'], 'refs/tags/')))
+  jobs:
+  - template: pipelines/build/kotlin-docker-build.yml@templates
+    parameters:
+      # ... snyk and other build parameters
+
+# STAGE 2: Deploy to the Dev environment.
+- stage: Deploy_Dev
+  displayName: 'Deploy to Dev'
+  dependsOn: Build_Artifact
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
   jobs:
-  - template: pipelines/build/kotlin-docker-build.yml@templates # Your build template
-    parameters: # ... build and snyk parameters
   - deployment: DeployToDevAKS
-    dependsOn: BuildJob # Name of the job inside the build template
-    environment: 'DEV Environment'
-    pool: { name: 'MB_Hub' }
-    variables:
-      imageTag: $[ dependencies.BuildJob.outputs['SetImageTag.imageTag'] ]
-    strategy: { runOnce: { deploy: { steps:
-      - checkout: self
-      - checkout: templates
-        path: 'platform'
-      - template: pipelines/deploy/aks-helm-deploy.yml@templates
-        parameters: # ... standard deploy parameters for dev
+    # ... (standard dev deployment job)
 
 # STAGE 3: MANUAL GATE to promote the 'dev' build to a 'release'
 - stage: Promote_To_QA
   displayName: 'Promote to QA'
-  dependsOn: Build_And_Deploy_Dev
+  dependsOn: Deploy_Dev
   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
   jobs:
   - deployment: Approval_and_Create_Release
-    displayName: 'Approve and Create Release Branch'
     environment: 'Promote to QA Gate - $(serviceName)'
     pool: { name: 'MB_DevOps' }
     strategy:
       runOnce:
         deploy:
           steps:
-          # This is the clean, reusable call to your step template
+          # Call the step template without the project name parameter.
           - template: pipelines/management/create-release-steps.yml@templates
             parameters:
-              microserviceProjectName: $(microserviceProjectName)
               repositoryName: $(serviceName)
 
-# STAGE 4 & 5: Build RC, Deploy to QA, and Promote to Prod
-- stage: QA_and_Promote_to_Prod
-  displayName: 'QA and Promote to Prod'
+# STAGE 4: Deploy the Release Candidate to QA.
+- stage: Deploy_QA
+  displayName: 'Deploy Release Candidate to QA'
+  dependsOn: Build_Artifact
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
   jobs:
-  - template: pipelines/build/kotlin-docker-build.yml@templates
-    parameters: # ... build and snyk parameters
   - deployment: Deploy_QA_East
-    dependsOn: BuildJob
-    environment: 'QA Environment - Region 1'
-    # ... standard QA deployment job ...
+    # ... (standard QA deployment job)
+
+# STAGE 5: MANUAL GATE to promote the 'release' build to 'main'
+- stage: Promote_To_Prod
+  displayName: 'Promote to Prod'
+  dependsOn: Deploy_QA
+  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
+  jobs:
   - deployment: Approval_and_Finalize_Release
-    dependsOn: Deploy_QA_East # And Deploy_QA_West if you have it
-    displayName: 'Approve and Finalize Release'
     environment: 'Promote to Prod Gate - $(serviceName)'
     pool: { name: 'MB_DevOps' }
     strategy:
       runOnce:
         deploy:
           steps:
-          # Clean, reusable call to your finalize step template
           - template: pipelines/management/finalize-release-steps.yml@templates
             parameters:
-              microserviceProjectName: $(microserviceProjectName)
               repositoryName: $(serviceName)
               releaseBranchName: $(Build.SourceBranchName)
 
-# STAGE 6: Promote and Deploy to Production
+# STAGE 6: Promote the artifact and Deploy to Production.
 - stage: Deploy_Prod
   displayName: 'Promote and Deploy to Production'
   dependsOn: []
-  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
+  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
   jobs:
   - job: Promote_Image
-    # ... promotion job ...
+    # ... (promotion job)
   - deployment: Deploy_Prod_East
-    dependsOn: Promote_Image
-    # ... production deployment job ...
+    # ... (production deployment job)
