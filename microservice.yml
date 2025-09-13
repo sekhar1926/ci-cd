@@ -1,36 +1,22 @@
 # ===================================================================================
-# ==         README: Single Run, Progressive Promotion Pipeline                  ==
+# ==         README: Progressive Promotion Pipeline (with Step Templates)        ==
 # ===================================================================================
 #
-# PURPOSE:
-# This is a single, all-in-one pipeline that manages the entire lifecycle of a
-# release, from Dev to QA to Prod, within a single pipeline run. It is the
-# definitive workflow for this application.
+# This is the definitive pipeline for this application. It provides a single, unified
+# view of a release's lifecycle while keeping the complex logic centralized in the
+# 'cicd-platform' repository.
 #
-# HOW IT WORKS:
-# 1.  **Trigger on 'dev':** The entire workflow starts with a merge to the 'dev' branch.
-#
-# 2.  **Build & Deploy Dev (Auto):** The first stages automatically build a 'dev'
-#     image and deploy it to the Dev environment. The pipeline then pauses.
-#
-# 3.  **Promote to QA (Manual Gate):** A 'Promote_To_QA' stage is gated by a manual
-#     approval. When approved, it runs a series of jobs:
-#       a. Calculates the next version (e.g., 1.1.0).
-#       b. Creates the 'release/1.1.0' branch.
-#       c. Checks out the new branch and builds the official '1.1.0-rc' image.
-#       d. Deploys the '1.1.0-rc' image to QA (after a final QA approval).
-#     The pipeline then pauses again.
-#
-# 4.  **Promote to Prod (Manual Gate):** A 'Promote_To_Prod' stage is gated by another
-#     approval. When approved, it runs jobs to:
-#       a. Merge the 'release/*' branch to 'main' and create the 'v*' tag.
-#       b. Re-tag the '1.1.0-rc' image in ACR to the final '1.1.0' tag.
-#       c. Deploy the final image to Production (after a final PROD approval).
+# WORKFLOW:
+# 1. 'dev' branch push triggers a build and deploy to the Dev cluster.
+# 2. The 'Promote_To_QA' stage waits for manual approval. When approved, it calls
+#    the 'create-release-steps.yml' template to create the release branch.
+# 3. The new 'release/*' branch triggers a new run of this pipeline for QA.
+# 4. The 'Promote_To_Prod' stage in the QA run waits for approval. When approved,
+#    it calls the 'finalize-release-steps.yml' template to merge and tag.
+# 5. The new version tag triggers a final run for Production deployment.
 #
 # ===================================================================================
 
-# This pipeline is primarily designed to be triggered by pushes to 'dev'.
-# Other triggers are included to handle the QA and Prod deployment self-triggers.
 trigger:
   branches:
     include:
@@ -39,11 +25,11 @@ trigger:
   tags:
     include:
       - v*.*.*
-
 pr:
   branches:
     include:
       - dev
+      - release/*
 
 resources:
   repositories:
@@ -53,137 +39,88 @@ resources:
       ref: main
 
 variables:
-  # ... (All your variables for serviceName, acrName, connections, agents, etc.)
+  # ... (All your variables for serviceName, acrName, connections, etc.)
   - name: serviceName
     value: 'manubank-transactions-microservice'
-  - name: acrName
-    value: 'acrmanubankdev'
-  - name: chartPath
-    value: 'charts/common-app'
-  # ... etc.
+  - name: microserviceProjectName
+    value: 'API Engineering'
 
 stages:
-# STAGE 1: Build an artifact. The tag depends on the source branch.
-- stage: Build_Artifact
-  displayName: 'Build and Validate Artifact'
-  # This stage is SKIPPED for production tag triggers.
-  condition: and(succeeded(), not(startsWith(variables['Build.SourceBranch'], 'refs/tags/')))
-  jobs:
-  - template: pipelines/build/kotlin-docker-build.yml@templates # Your build template with Snyk
-    parameters:
-      serviceName: $(serviceName)
-      acrName: $(acrName)
-      acrConnection: 'acr-service-connection'
-      # ... other snyk parameters
-
-# STAGE 2: Deploy to the Dev environment.
-- stage: Deploy_Dev
-  displayName: 'Deploy to Dev'
-  dependsOn: Build_Artifact
+# STAGE 1 & 2: Build and Deploy to Dev
+- stage: Build_And_Deploy_Dev
+  displayName: 'Build & Deploy to Dev'
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
   jobs:
+  - template: pipelines/build/kotlin-docker-build.yml@templates # Your build template
+    parameters: # ... build and snyk parameters
   - deployment: DeployToDevAKS
+    dependsOn: BuildJob # Name of the job inside the build template
     environment: 'DEV Environment'
     pool: { name: 'MB_Hub' }
     variables:
-      imageTag: $[ stageDependencies.Build_Artifact.BuildJob.outputs['SetImageTag.imageTag'] ]
+      imageTag: $[ dependencies.BuildJob.outputs['SetImageTag.imageTag'] ]
     strategy: { runOnce: { deploy: { steps:
       - checkout: self
       - checkout: templates
         path: 'platform'
       - template: pipelines/deploy/aks-helm-deploy.yml@templates
-        parameters:
-          # ... standard deploy parameters for dev
-          valuesFile: 'helm-values/dev.yaml'
-    } } } }
+        parameters: # ... standard deploy parameters for dev
 
-# STAGE 3: MANUAL GATE and Promotion to QA
+# STAGE 3: MANUAL GATE to promote the 'dev' build to a 'release'
 - stage: Promote_To_QA
   displayName: 'Promote to QA'
-  dependsOn: Deploy_Dev
+  dependsOn: Build_And_Deploy_Dev
   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
   jobs:
-  # JOB 1: Wait for manual approval to start the QA process.
-  - job: Approval_Gate_QA
-    displayName: 'Approval to Start QA Release'
-    pool: server # Agentless job
-    steps:
-    - task: ManualValidation@0
-      timeoutInMinutes: 4320 # 3 days
-      inputs:
-        notifyUsers: 'your-release-managers@yourcompany.com'
-        instructions: 'Approve to calculate the next version, create a release branch, build an RC image, and deploy to QA.'
-
-  # JOB 2: Create the release branch. Depends on the approval.
-  - job: Create_Release_Branch
-    displayName: 'Create Release Branch'
-    dependsOn: Approval_Gate_QA
+  - deployment: Approval_and_Create_Release
+    displayName: 'Approve and Create Release Branch'
+    environment: 'Promote to QA Gate - $(serviceName)'
     pool: { name: 'MB_DevOps' }
-    steps:
-    - task: Bash@3
-      name: CalculateVersion
-      displayName: 'Calculate Next Version'
-      # This is the "Calculate Next Version" script from our management pipeline.
-      # It outputs the 'NextVersion' variable.
-      # ... (paste the full script here)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          # This is the clean, reusable call to your step template
+          - template: pipelines/management/create-release-steps.yml@templates
+            parameters:
+              microserviceProjectName: $(microserviceProjectName)
+              repositoryName: $(serviceName)
 
-  # JOB 3: This is a "pass-through" job to carry the version variable to the next stage.
-  # We need this because we are going to self-trigger a new build.
-  - job: Set_Release_Version
-    displayName: 'Set Release Version'
-    dependsOn: Create_Release_Branch
-    pool: server
-    variables:
-      nextVersion: $[ dependencies.Create_Release_Branch.outputs['CalculateVersion.NextVersion'] ]
-    steps:
-      - task: Bash@3
-        displayName: 'Create Release Branch and Trigger New Pipeline Run'
-        # This job's main purpose is to push the new release branch, which will
-        # trigger a new run of this pipeline for the QA deployment.
-
-# STAGE 4: Deploy the Release Candidate to QA.
-# This stage only runs when the trigger is a 'release/*' branch.
-- stage: Deploy_QA
-  displayName: 'Deploy Release Candidate to QA'
-  dependsOn: Build_Artifact
+# STAGE 4 & 5: Build RC, Deploy to QA, and Promote to Prod
+- stage: QA_and_Promote_to_Prod
+  displayName: 'QA and Promote to Prod'
   condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
   jobs:
+  - template: pipelines/build/kotlin-docker-build.yml@templates
+    parameters: # ... build and snyk parameters
   - deployment: Deploy_QA_East
+    dependsOn: BuildJob
     environment: 'QA Environment - Region 1'
-    # ... (rest of the QA jobs are the same)
-
-# STAGE 5: MANUAL GATE and Promotion to Production.
-# This stage only appears on runs triggered by a 'release/*' branch.
-- stage: Promote_To_Prod
-  displayName: 'Promote to Production'
-  dependsOn: Deploy_QA
-  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))
-  jobs:
-  - job: Approval_Gate_Prod
-    displayName: 'Approval to Start Production Release'
-    pool: server
-    steps:
-    - task: ManualValidation@0
-      timeoutInMinutes: 1440 # 1 day
-      inputs:
-        notifyUsers: 'your-prod-approvers@yourcompany.com'
-        instructions: 'QA has signed off. Approve to merge to main, tag, and deploy to Production.'
-  - job: Finalize_Release
-    displayName: 'Finalize Release (Merge & Tag)'
-    dependsOn: Approval_Gate_Prod
+    # ... standard QA deployment job ...
+  - deployment: Approval_and_Finalize_Release
+    dependsOn: Deploy_QA_East # And Deploy_QA_West if you have it
+    displayName: 'Approve and Finalize Release'
+    environment: 'Promote to Prod Gate - $(serviceName)'
     pool: { name: 'MB_DevOps' }
-    steps:
-      # This is the "Finalize Release" script from our management pipeline.
-      # It merges to main and creates the version tag, triggering the final run.
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          # Clean, reusable call to your finalize step template
+          - template: pipelines/management/finalize-release-steps.yml@templates
+            parameters:
+              microserviceProjectName: $(microserviceProjectName)
+              repositoryName: $(serviceName)
+              releaseBranchName: $(Build.SourceBranchName)
 
-# STAGE 6: Promote the artifact and Deploy to Production.
-# This stage only runs when the trigger is a 'v*' tag.
+# STAGE 6: Promote and Deploy to Production
 - stage: Deploy_Prod
   displayName: 'Promote and Deploy to Production'
   dependsOn: []
-  condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
+  condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), startsWith(variables['Build.SourceBranch'], 'refs/tags/v'))
   jobs:
   - job: Promote_Image
-    # ... (rest of the promotion job is the same)
+    # ... promotion job ...
   - deployment: Deploy_Prod_East
-    # ... (rest of the prod deployment jobs are the same)
+    dependsOn: Promote_Image
+    # ... production deployment job ...
