@@ -2,43 +2,92 @@
 # ==                 README: Create Release - Step Template                      ==
 # ===================================================================================
 #
-# CORRECTION (Auto Project Name):
-# The 'microserviceProjectName' parameter has been REMOVED. This template now uses
-# the built-in Azure DevOps variable '$(System.TeamProject)' to automatically
-# determine the project name. This makes the calling pipeline simpler and more robust.
+# CORRECTION (Using checkout: self):
+# This version replaces the verbose 'git clone' script with the cleaner, built-in
+# 'checkout: self' task. 'self' correctly refers to the microservice repository
+# where the main pipeline is running. An explicit 'Sync Git Branches' step is
+# included to ensure the checked-out code is perfectly up-to-date before analysis.
 #
 # ===================================================================================
 
 parameters:
-- name: repositoryName # Now only needs the repository name
+- name: repositoryName
   type: string
 
 steps:
+# Step 1: Check out the microservice repository.
+- checkout: self
+  persistCredentials: true # Make the token available for subsequent git pushes
+
+# Step 2: Configure Git user identity for all subsequent tasks.
 - task: Bash@3
   displayName: 'Configure Git Identity'
-  # ... (script is the same)
+  inputs:
+    script: |
+      git config --global user.email "svc.pipeline@yourcompany.com"
+      git config --global user.name "Azure DevOps Pipeline"
+
+# Step 3: Install the versioning tools.
 - task: Bash@3
   displayName: 'Install Versioning Tools'
-  # ... (script is the same)
+  inputs:
+    script: |
+      echo '{ "name": "create-release-tools", "version": "1.0.0" }' > package.json
+      npm install conventional-recommended-bump semver conventional-changelog-angular
+
+# Step 4: Sync local branches with the remote to ensure a complete history.
 - task: Bash@3
-  displayName: 'Clone & Sync Repo'
+  displayName: 'Sync Git Branches'
+  inputs:
+    # workingDirectory is not needed as all steps run in the default checkout directory
+    script: |
+      set -e
+      echo "Fetching all remote branches and tags..."
+      git fetch --all --tags
+
+      echo "Syncing local 'main' with remote 'origin/main'..."
+      git checkout main
+      git reset --hard origin/main
+
+      echo "Syncing local 'dev' with remote 'origin/dev'..."
+      git checkout dev
+      git reset --hard origin/dev
+
+# Step 5: Get the last version and calculate the next one.
+- task: Bash@3
+  displayName: 'Calculate Next Version'
+  name: CalculateVersion
+  inputs:
+    script: |
+      set -e
+      LAST_TAG=$(git describe --tags --abbrev=0 `git rev-list --tags --max-count=1` || echo "v0.0.0")
+      LAST_VERSION_CLEAN=${LAST_TAG#v}
+      echo "Last release version found: $LAST_VERSION_CLEAN"
+      
+      BUMP_TYPE=$(npx conventional-recommended-bump -p angular)
+      echo "Recommended bump type based on new commits: $BUMP_TYPE"
+
+      NEXT_VERSION=$(npx semver -i $BUMP_TYPE $LAST_VERSION_CLEAN)
+      echo "Calculated next version: $NEXT_VERSION"
+
+      echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
+
+# Step 6: Create and push the release branch.
+- task: Bash@3
+  displayName: 'Create and Push Release Branch'
+  condition: succeeded()
   inputs:
     env: { GIT_TOKEN: $(System.AccessToken) }
     script: |
       set -e
-      # The project name is now taken from a built-in variable.
-      PROJECT_NAME_ENCODED=$(echo "$(System.TeamProject)" | sed 's/ /%20/g')
-      REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/YourOrgName/${PROJECT_NAME_ENCODED}/_git/${{ parameters.repositoryName }}"
-      git clone "$REPO_URL" service-repo
-      cd service-repo
-      git fetch --all --tags
-      git checkout main
-      git reset --hard origin/main
-      git checkout dev
-      git reset --hard origin/dev
-- task: Bash@3
-  displayName: 'Calculate Next Version'
-  # ... (script is the same)
-- task: Bash@3
-  displayName: 'Create and Push Release Branch'
-  # ... (script is the same)
+      NEXT_VERSION="$(CalculateVersion.NextVersion)"
+      if [ -z "$NEXT_VERSION" ]; then
+        echo "No new version was calculated. Skipping branch creation."
+      else
+        echo "Creating release branch for version $NEXT_VERSION."
+        RELEASE_BRANCH="release/$NEXT_VERSION"
+        git checkout -b $RELEASE_BRANCH
+        AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${(git config --get remote.origin.url)#https://}"
+        git push $AUTH_REPO_URL $RELEASE_BRANCH
+        echo "Successfully created and pushed $RELEASE_BRANCH"
+      fi
