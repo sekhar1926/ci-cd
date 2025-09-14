@@ -1,0 +1,108 @@
+# ===================================================================================
+# ==                 README: Promote to QA - Job Template                        ==
+# ===================================================================================
+#
+# PURPOSE:
+# This is a JOB TEMPLATE. It encapsulates the entire multi-job workflow required to
+# promote a build from Dev to a Release Candidate for QA within a single pipeline run.
+#
+# HOW IT'S USED:
+# This template is called from the 'jobs:' block of the 'Promote_To_QA' stage in the
+# main application pipeline.
+#
+# WORKFLOW:
+# 1.  **Approval Gate:** It starts with an agentless job containing a ManualValidation
+#     task. The pipeline pauses here until a user approves.
+# 2.  **Create Release:** A second job, dependent on the approval, calculates the next
+#     version and creates/pushes the 'release/*' branch.
+# 3.  **Build RC Image:** A third job, dependent on the branch creation, checks out the
+#     new branch and calls the standard build template to create the official RC image.
+#
+# This template outputs the final RC image tag for the subsequent Deploy_To_QA stage.
+#
+# ===================================================================================
+
+parameters:
+- name: serviceName
+  type: string
+- name: acrName
+  type: string
+- name: buildTemplatePath
+  type: string # e.g., 'pipelines/build/kotlin-docker-build.yml@templates'
+
+jobs:
+# JOB 1: The manual approval gate.
+- job: Approval_Gate_QA
+  displayName: 'Approval to Start QA Release'
+  pool: server # Agentless job
+  steps:
+  - task: ManualValidation@0
+    timeoutInMinutes: 4320 # 3 days
+    inputs:
+      notifyUsers: 'your-release-managers@yourcompany.com'
+      instructions: 'Approve to create a Release Candidate for ${{ parameters.serviceName }} and deploy to the QA environment.'
+
+# JOB 2: Create the release branch.
+- job: Create_Release_Metadata
+  displayName: 'Calculate Version & Create Branch'
+  dependsOn: Approval_Gate_QA
+  pool: { name: 'MB_DevOps' }
+  steps:
+  # The steps are identical to the 'create-release-steps' logic
+  - task: Bash@3
+    name: CalculateVersion
+    displayName: 'Calculate Version and Create Branch'
+    inputs:
+      env: { GIT_TOKEN: $(System.AccessToken) }
+      script: |
+        # This script calculates, then creates and pushes the branch
+        git config --global user.email "svc.pipeline@yourcompany.com"
+        git config --global user.name "Azure DevOps Pipeline"
+        npm install conventional-recommended-bump semver conventional-changelog-angular
+        # Clone and sync logic...
+        REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/$(System.TeamFoundationCollectionUri.Split('@')[1])$(System.TeamProject)/_git/${{ parameters.serviceName }}"
+        git clone "$REPO_URL" .
+        git fetch --all --tags
+        git checkout main
+        git reset --hard origin/main
+        git checkout dev
+        git reset --hard origin/develop
+        # Calculation logic...
+        LAST_TAG=$(git describe --tags --abbrev=0 `git rev-list --tags --max-count=1` || echo "v0.0.0")
+        LAST_VERSION_CLEAN=${LAST_TAG#v}
+        BUMP_TYPE=$(npx conventional-recommended-bump -p angular)
+        NEXT_VERSION=$(npx semver -i $BUMP_TYPE $LAST_VERSION_CLEAN)
+        echo "##vso[task.setvariable variable=NextVersion;isOutput=true]$NEXT_VERSION"
+        # Branch creation logic...
+        RELEASE_BRANCH="release/$NEXT_VERSION"
+        git checkout -b $RELEASE_BRANCH
+        AUTH_REPO_URL="https://x-token-auth:$(GIT_TOKEN)@${(git config --get remote.origin.url)#https://}"
+        git push $AUTH_REPO_URL $RELEASE_BRANCH
+
+# JOB 3: Build the official RC artifact from the new branch.
+- job: Build_RC_Artifact
+  displayName: 'Build Release Candidate Image'
+  dependsOn: Create_Release_Metadata
+  pool: { name: 'MB_DevOps' }
+  variables:
+    # Get the version number calculated in the previous job.
+    nextVersion: $[ dependencies.Create_Release_Metadata.outputs['CalculateVersion.NextVersion'] ]
+  steps:
+  - task: Bash@3
+    displayName: 'Checkout Release Branch'
+    inputs:
+      env: { GIT_TOKEN: $(System.AccessToken) }
+      script: |
+        set -e
+        RELEASE_BRANCH="release/$(nextVersion)"
+        echo "Checking out newly created branch: $RELEASE_BRANCH"
+        # We are in a new job, so we must clone again to get the new branch
+        REPO_URL="https://x-token-auth:$(GIT_TOKEN)@dev.azure.com/$(System.TeamFoundationCollectionUri.Split('@')[1])$(System.TeamProject)/_git/${{ parameters.serviceName }}"
+        git clone -b $RELEASE_BRANCH "$REPO_URL" .
+  # Call the standard build template on this newly checked-out code
+  - template: ${{ parameters.buildTemplatePath }}
+    parameters:
+      # Pass parameters to the build template to build the RC image
+      serviceName: ${{ parameters.serviceName }}
+      acrName: ${{ parameters.acrName }}
+      acrConnection: 'acr-service-connection' # Assuming a standard name
