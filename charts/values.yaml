@@ -55,3 +55,91 @@ secretProvider:
       alias: VAULT_ENCRYPTION_PRINCIPAL_CLIENT_SECRET
     - name: transactions-mongodb-uri
       alias: MONGODB_URI
+
+
+# ... (replicaCount, image, service, virtualServerRoute sections are the same) ...
+
+# -- Non-Secret Environment Variables --
+# DEPRECATED: extraEnvs: {}
+
+# NEW, MORE POWERFUL env section. This is a list of environment variable objects.
+# It allows for both simple 'value' and complex 'valueFrom' variables.
+env: []
+#  Example of a simple variable:
+#  - name: LOGGING_LEVEL
+#    value: "INFO"
+#
+#  Example of a Downward API variable (like your use case):
+#  - name: MY_POD_NAME
+#    valueFrom:
+#      fieldRef:
+#        apiVersion: v1
+#        fieldPath: metadata.name
+#
+#  Example of a variable from a ConfigMap:
+#  - name: MY_CONFIG_VALUE
+#    valueFrom:
+#      configMapKeyRef:
+#        name: my-configmap
+#        key: my-key
+
+# ... (secretProvider section is the same) ...
+
+
+# ... (namespace, replicaCount, virtualServerRoute are the same) ...
+
+# NEW: Use the 'env' list instead of 'extraEnvs'
+env:
+  - name: SPRING_PROFILES_ACTIVE
+    value: "dev"
+  - name: LOGGING_LEVEL
+    value: "DEBUG"
+  # This is your specific use case for the pod name
+  - name: MY_POD_NAME
+    valueFrom:
+      fieldRef:
+        apiVersion: v1
+        fieldPath: metadata.name
+  # You can also add other Downward API fields
+  - name: MY_POD_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: status.podIP
+  - name: MY_NAMESPACE
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.namespace
+
+# The secretProvider section remains exactly the same
+secretProvider:
+  parameters:
+    keyvaultName: "order-service-dev-kv"
+    # ... etc.
+
+
+# ... (apiVersion, kind, metadata, etc. are the same) ...
+    spec:
+      containers:
+        - name: {{ .Release.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          # ... (ports are the same) ...
+
+          # ============================ THE FIX IS HERE ============================
+          # This is the new, more flexible environment variable block.
+          env:
+            # First, we loop through the 'env' list from the values.yaml file.
+            # The 'toYaml' function correctly formats the complex objects.
+            {{- if .Values.env }}
+            {{- .Values.env | toYaml | nindent 12 }}
+            {{- end }}
+          
+          # The 'envFrom' for injecting secrets from the SecretProviderClass
+          # remains the same.
+          {{- if and .Values.secretProvider.enabled .Values.secretProvider.parameters.secrets }}
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+          {{- end }}
+          # =======================================================================
+
+          # ... (volumeMounts, etc. are the same) ...
