@@ -1,0 +1,19 @@
+Prompt:
+
+Create a single-slide Azure Cloud Infrastructure Overview on a white background with a Segoe UI font and Azure brand colors (primary blue #0078D4). Use a gradient blue-to-navy top bar on the slide master and a thin blue bottom accent line.
+
+Layout the slide as an 8-section dashboard grid — 4 sections on top, 4 on bottom — each with a colored rounded-rectangle header and a bordered card below containing component details. Use these sections and colors:
+
+NETWORKING (Azure Blue #0078D4) — VNet 10.0.0.0/16, 4 subnets (Frontend 10.0.1.0/24 with App Gateway + WAF, Backend 10.0.2.0/24 with AKS + VMs, Data 10.0.3.0/24 with SQL + Redis + Cosmos, Mgmt 10.0.4.0/24 with Bastion + Jump Box), NSG Rules, Azure Firewall Premium. Show subnets as a 2×2 grid of light-blue cards inside a blue-bordered VNet container.
+COMPUTE & CONTAINERS (Dark Blue #005A9E) — AKS cluster with 3 node pools shown as side-by-side cards: System (3× D4s_v3, 4 vCPU/16GB), App (5× D8s_v3, 8 vCPU/32GB), GPU (2× NC6s_v3, 6 vCPU/112GB). Below: NGINX Ingress, Istio, HPA, ACR Premium, Helm, GitOps. Then two cards: VM Scale Sets (Windows 4× D4s_v5, Linux 6× B2ms, auto-scale 2–20) and App Services (P3v3 Premium, 8 vCPU/32GB, Staging + Prod slots).
+DATA & STORAGE (Teal #00B294, darken header to #007A5E for contrast) — Two cards top: Azure SQL DB (Business Critical, Gen5 8 vCores, 256GB, Geo-Replication) and Cosmos DB (SQL API, 10K RU/s auto, multi-region write, 99.999% SLA). Two cards middle: Redis Cache (Premium P3, 26GB, clustering) and Storage Accounts (Blob Hot/Cool/Archive, LRS+GRS 10TB). Bottom: Data Lake Gen2 + Synapse Analytics (50TB Parquet, DW1000c, Spark M-sized).
+SECURITY & IDENTITY (Red, darken header to #B71C2E for contrast) — Entra ID Premium P2 (MFA, PIM, Conditional Access, RBAC, JIT, B2C 50K MAU, SAML/OIDC SSO). Two cards: Key Vault (Premium HSM, auto-rotation) and Defender for Cloud (CSPM + CWP, Enhanced Security). Bottom strip: DDoS Protection Standard, Private Endpoints, Service Endpoints.
+DEVOPS & CI/CD (Purple #7B5EA7) — Azure DevOps + GitHub Actions, 25 repos, YAML pipelines, 12 self-hosted build agents, NuGet + npm + Docker artifacts via ACR, Blue/Green + Canary + Feature Flags releases, Terraform + Bicep + ARM IaC.
+MONITORING & OBSERVABILITY (Orange, darken header to #B06000 for contrast) — Azure Monitor + Log Analytics, Application Insights APM, 90-day retention, 150+ alert rules + Action Groups + PagerDuty, Grafana + Azure Workbooks dashboards, Network Watcher + Traffic Analytics + Flow Logs.
+AI/ML & MESSAGING (Azure Blue #0078D4) — Azure OpenAI (GPT-4 Turbo, Embeddings, DALL-E 3), Azure ML workspace + compute clusters, Cognitive Services (Vision, Speech, Language), Service Bus Premium, Event Hub Standard, Event Grid, Azure Functions Consumption.
+GOVERNANCE & COST (Navy #1B2A4A) — 3 Subscriptions (Prod/Staging/Dev), 85 Azure Policy assignments + CIS Benchmark, Cost Management with budgets + alerts + Reserved Instances, Tags (Env/Owner/CostCenter/Project), Blueprints + Landing Zones + CAF aligned.
+Add a dark navy (#1B2A4A) rounded-rectangle footer bar spanning the full width with white text: "Region: East US (Primary) + West US (DR) | SLA Target: 99.95% | RPO: 15min / RTO: 1hr | Est. Monthly Cost: ~$45,000 | Resources: 180+"
+
+Top-right corner: "☁ Microsoft Azure" in blue as a brand label. Title at top-left: "Azure Cloud Infrastructure Overview" in 22pt blue bold, with a subtitle line below: "Production Environment | Enterprise Architecture | Multi-Region Deployment" in 9pt gray.
+
+Use light-tinted backgrounds in each card matching its section color. All detail text 5.5–7pt in gray (#5A6A7A), headers/labels in bold in darker shades of each section color. Keep everything on one slide with no empty space at the bottom.
