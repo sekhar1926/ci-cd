@@ -17,3 +17,12 @@ Add a dark navy (#1B2A4A) rounded-rectangle footer bar spanning the full width w
 Top-right corner: "☁ Microsoft Azure" in blue as a brand label. Title at top-left: "Azure Cloud Infrastructure Overview" in 22pt blue bold, with a subtitle line below: "Production Environment | Enterprise Architecture | Multi-Region Deployment" in 9pt gray.
 
 Use light-tinted backgrounds in each card matching its section color. All detail text 5.5–7pt in gray (#5A6A7A), headers/labels in bold in darker shades of each section color. Keep everything on one slide with no empty space at the bottom.
+
+
+Create a single executive slide titled 'Cloud infrastructure overview'. Subtitle: 'Azure · 3 environments · 14 subscriptions · 3 management groups · Dual-region active-active'. Organize the slide into 5 horizontal sections:
+1. Network architecture — Hub & Spoke (per environment): show 5 components — Firewall, Bastion (secure remote access), Front Door (global load balancing), API gateway, DevOps agents (self-hosted VMSS). Below hub add a dashed Spoke section with: Container platform (AKS + Nginx ingress), Serverless functions (Azure Functions), Secrets management (Key Vault).
+2. Deployment & infrastructure: CI/CD Pipelines (Azure DevOps), Infrastructure as Code (Terraform), App packaging (Helm + Nexus registry).
+3. Security & compliance: Identity (Entra ID + PIM, just-in-time access), Cloud security posture (Wiz CSPM), Code scanning (Snyk SCA + SAST), Observability (Azure Monitor + Splunk SIEM).
+4. Resilience: Dual-region active-active deployment, Environment isolation (Dev/QA/Prod in separate management groups).
+5. Stat bar at bottom: 3 environments, 14 subscriptions, 2 Azure regions, Hub+spoke per env, PIM access.
+Use a clean, minimal executive style. No technical jargon in descriptions — focus on business value.
